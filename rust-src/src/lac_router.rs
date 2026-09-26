@@ -1417,9 +1417,13 @@ enum ForwardError {
     /// is reported separately from a truncated frame — but the upstream is
     /// loopback, so the peer process went away and this is charged.
     StreamCut { down: u64, ttfb: Option<f64> },
+    /// The response was unusable before any of it reached the client, so
+    /// `down` is always 0: every raise site precedes the first write, and the
+    /// one after the relay loop is guarded by `!headers_done`.
     BadResponse { down: u64, ttfb: Option<f64> },
     ClientGone { down: u64, ttfb: Option<f64> },
-    /// Backend requested a protocol upgrade that this HTTP relay does not support.
+    /// Backend requested a protocol upgrade that this HTTP relay does not
+    /// support.
     UnsupportedUpgrade { up: u64, ttfb: Option<f64> },
 }
 
@@ -2174,7 +2178,11 @@ fn try_forward(
                         let Some(status) = response_status(&head_buf[..h_end]) else {
                             return Err(ForwardError::BadResponse { down: down_total, ttfb });
                         };
-                        if !(100..200).contains(&status) && ttfb.is_none() {
+                        // Interim 1xx are drained and are not the answer, so
+                        // they do not start the clock. A 101 is: it is
+                        // terminal, and how fast the backend offered the
+                        // upgrade is worth recording before we reject it.
+                        if ttfb.is_none() && (!(100..200).contains(&status) || status == 101) {
                             ttfb = Some(t_start.elapsed().as_secs_f64() * 1000.0);
                         }
                         if status == 101 {

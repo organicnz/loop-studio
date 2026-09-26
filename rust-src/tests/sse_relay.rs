@@ -182,6 +182,8 @@ fn spawn_backend() -> u16 {
                     "hold-open"
                 } else if text.contains("eof-json") {
                     "eof-json"
+                } else if text.contains("always-503") {
+                    "always-503"
                 } else if text.contains("rst-cut") {
                     "rst-cut"
                 } else if text.contains("sse-slow") {
@@ -340,6 +342,16 @@ fn spawn_backend() -> u16 {
                         let _ = s.write_all(
                             b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{\"eof\":\"ok\"}",
                         );
+                    }
+                    "always-503" => {
+                        // A retryable server error: charged against the
+                        // backend and failed over, every single time.
+                        let body = r#"{"error":"deliberate backend failure"}"#;
+                        let _ = s.write_all(format!(
+                            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        ).as_bytes());
                     }
                     "rst-cut" => {
                         // A chunked request is never drained by the
@@ -621,6 +633,33 @@ fn probe_declared_over_budget(router_port: u16, budget: usize) -> Vec<u8> {
     stream.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
     stream.write_all(head.as_bytes()).unwrap();
     read_response(&mut stream)
+}
+
+/// Pull one numeric field out of a backend's stats object in /lac/status.
+/// The format is fixed: `"<name>":{"port":P,"ewma_ms":X,"ok":O,"err":E,...}`.
+fn stat_field(status: &str, backend: &str, field: &str) -> Option<u64> {
+    let start = status.find(&format!("\"{backend}\":{{\"port\":"))?;
+    let rest = &status[start..];
+    let obj = &rest[..rest.find('}')?];
+    let at = obj.find(&format!("\"{field}\":"))? + field.len() + 3;
+    obj[at..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .ok()
+}
+
+/// POST a fixed body through the router and return the raw response.
+fn probe_raw_with_body(router_port: u16, body: &str) -> (Vec<u8>, Vec<(f64, usize)>, f64) {
+    let request = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let t0 = Instant::now();
+    let response = probe_raw(router_port, request.as_bytes());
+    (response, Vec::new(), t0.elapsed().as_secs_f64())
 }
 
 fn wait_router(port: u16) {
@@ -1146,6 +1185,74 @@ fn relay_framing_regressions() {
         .expect("budget usage log exists");
     assert_eq!(budget_usage.matches("\"outcome\":\"stream-broke\"").count(), 3);
     assert_eq!(budget_usage.matches("\"outcome\":\"stream-cut\"").count(), 0);
+
+    // The breaker, asserted directly instead of inferred from the fault
+    // counts of unrelated scenarios. MLX answers 503 on demand; llama is
+    // healthy, so every request is served after a failover. MLX stays
+    // "up" on the health probe throughout, which is the point: the breaker,
+    // not health, is what must take it out of rotation after three faults.
+    let breaker_home = std::env::temp_dir().join(format!("lac-test-relay-breaker-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&breaker_home);
+    let _ = std::fs::create_dir_all(&breaker_home);
+    let breaker_home_env = breaker_home.to_string_lossy().into_owned();
+    let breaker_router = support::spawn_router(
+        router_bin,
+        &[
+            ("HOME", &breaker_home_env),
+            ("LAC_BIND_ADDR", "127.0.0.1"),
+            ("MLX_PORT", &llama_env),
+            ("LAC_LLAMA_PORT", &healthy_env),
+            ("LAC_OLLAMA_PORT", &dead_env),
+            ("LAC_BACKEND", "auto"),
+        ],
+    );
+    let breaker_port = breaker_router.port;
+    assert_ne!(breaker_port, dead_port, "router took the dead-backend port");
+    wait_router(breaker_port);
+
+    let status_of = |port: u16| {
+        String::from_utf8_lossy(&probe_raw(
+            port,
+            b"GET /lac/status HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        ))
+        .to_string()
+    };
+    let failing_body =
+        r#"{"model":"qwen3.8-27b","scenario":"always-503"}"#.to_string();
+
+    // Three faults: each is charged and failed over, so the caller never
+    // sees the failure.
+    for attempt in 1..=3 {
+        let (raw, _, _) = probe_raw_with_body(breaker_port, &failing_body);
+        assert!(
+            String::from_utf8_lossy(&raw).contains("healthy-failover"),
+            "request {attempt} must fail over to the healthy backend: {:?}",
+            String::from_utf8_lossy(&raw)
+        );
+    }
+    let status = status_of(breaker_port);
+    assert_eq!(stat_field(&status, "mlx", "err"), Some(3), "three faults charged: {status}");
+    assert!(
+        status.contains("\"active\": \"llama\""),
+        "the failing backend must have left rotation: {status}"
+    );
+
+    // Fourth request: the breaker is open, so the failing backend is not
+    // tried at all and its error count must not move.
+    let (after_open, _, _) = probe_raw_with_body(breaker_port, &failing_body);
+    assert!(String::from_utf8_lossy(&after_open).contains("healthy-failover"));
+    assert_eq!(
+        stat_field(&status_of(breaker_port), "mlx", "err"),
+        Some(3),
+        "an open breaker must stop the backend being tried"
+    );
+
+    // The cooldown reopening the breaker is covered deterministically by the
+    // breaker_matrix unit test, which is why this suite does not sit out the
+    // 30s cooldown on the clock: a wall-clock dependency here would be the
+    // same fragility this block exists to remove.
+    drop(breaker_router);
+    let _ = std::fs::remove_dir_all(&breaker_home);
 
     drop(budget_router);
     drop(router);

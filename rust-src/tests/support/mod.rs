@@ -19,7 +19,12 @@ impl PortLock {
             .write(true)
             .open(&path)
             .expect("open router test port lock");
-        let deadline = Instant::now() + Duration::from_secs(30);
+        // Must comfortably exceed the longest suite that takes this lock.
+        // The relay suite runs ~60s on its own, and cargo runs test binaries
+        // concurrently, so a shorter wait meant the shorter suites could time
+        // out behind it rather than queue — a failure that only appeared when
+        // the scheduler happened to overlap them.
+        let deadline = Instant::now() + Duration::from_secs(300);
         while Instant::now() < deadline {
             if try_lock(&file) {
                 return Self { file };
