@@ -297,11 +297,11 @@ fn sniff_model(buf: &[u8]) -> Option<String> {
 }
 
 fn usage_log_path() -> String {
-    format!("{}/.lac/router-usage.jsonl", common::home_dir())
+    common::usage_log_paths().0
 }
 
 /// One JSONL line per proxied request. Rotated past 8MB (previous window
-/// kept as `.1`) so the log can never fill a disk by itself.
+/// kept beside it as `.1`) so the log can never fill a disk by itself.
 #[allow(clippy::too_many_arguments)]
 fn log_usage(
     rid: usize,
@@ -314,12 +314,16 @@ fn log_usage(
     ttfb_ms: Option<f64>,
     outcome: &str,
 ) {
-    let path = usage_log_path();
+    let (path, rotated) = common::usage_log_paths();
     if std::fs::metadata(&path)
         .map(|m| m.len() > USAGE_ROTATE_BYTES)
         .unwrap_or(false)
     {
-        let _ = std::fs::rename(&path, format!("{}.1", path));
+        // The rotated name comes from the same helper `kv-manage` reads, so
+        // the generation this moves is one the reader will actually find.
+        // The rename replaces any earlier `.1`, which is the intent: exactly
+        // one previous generation is kept.
+        let _ = std::fs::rename(&path, rotated);
     }
     let line = format!(
         "{{\"ts\":{},\"rid\":{},\"backend\":\"{}\",\"port\":{},\"model\":\"{}\",\"req_body\":{},\"resp_body\":{},\"est_tokens\":{},\"ttfb_ms\":{},\"outcome\":\"{}\"}}",
@@ -982,19 +986,38 @@ fn request_line(buf: &[u8]) -> (String, String) {
 
 // -------------------------------------------------------------- http blobs --
 
-fn http_response(status: &str, content_type: &str, body: &str) -> String {
+/// The CORS block for a response, or nothing at all. A native client gets an
+/// empty string, which is the whole point: no `Origin` means no
+/// browser-readable surface. An allow-listed browser origin gets its own
+/// exact value back — never `*` unless the operator asked for `*` — plus
+/// `Vary: Origin` so a shared cache cannot hand that reply to a page which
+/// was not allowed.
+fn cors_headers(cors: Option<&str>) -> String {
+    match cors {
+        Some(origin) => format!("Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\n"),
+        None => String::new(),
+    }
+}
+
+fn http_response(status: &str, content_type: &str, body: &str, cors: Option<&str>) -> String {
     format!(
-        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n{}",
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n{}\r\n{}",
         status,
         content_type,
         body.len(),
+        cors_headers(cors),
         body
     )
 }
 
-fn json_response(stream: &mut TcpStream, status: &str, body: &str) -> io::Result<()> {
+fn json_response(
+    stream: &mut TcpStream,
+    status: &str,
+    body: &str,
+    cors: Option<&str>,
+) -> io::Result<()> {
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
-    stream.write_all(http_response(status, "application/json", body).as_bytes())
+    stream.write_all(http_response(status, "application/json", body, cors).as_bytes())
 }
 
 /// A response the caller should retry rather than shrink or give up on.
@@ -1007,6 +1030,7 @@ fn retryable_http_response(
     error_type: &str,
     message: &str,
     retry_after_secs: u64,
+    cors: Option<&str>,
 ) -> String {
     // Take the code from the status rather than hardcoding one, so the body
     // cannot contradict the status line.
@@ -1022,24 +1046,27 @@ fn retryable_http_response(
         code
     );
     format!(
-        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nRetry-After: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n{}",
+        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nRetry-After: {}\r\nConnection: close\r\n{}\r\n{}",
         status,
         body.len(),
         retry_after_secs,
+        cors_headers(cors),
         body
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn retryable_response(
     stream: &mut TcpStream,
     status: &str,
     error_type: &str,
     message: &str,
     retry_after_secs: u64,
+    cors: Option<&str>,
 ) -> io::Result<()> {
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
     stream.write_all(
-        retryable_http_response(status, error_type, message, retry_after_secs).as_bytes(),
+        retryable_http_response(status, error_type, message, retry_after_secs, cors).as_bytes(),
     )
 }
 
@@ -1060,6 +1087,7 @@ fn persist_backend(id: usize) {
     let _ = common::atomic_write(&backend_pref_path(), backend_name(id));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_lac_status(
     mut stream: TcpStream,
     preferred: usize,
@@ -1068,6 +1096,7 @@ fn handle_lac_status(
     routes: &RouteMap,
     started: Instant,
     inflight: usize,
+    cors: Option<&str>,
 ) -> io::Result<()> {
     let mlx_port = port_mlx();
     let llama_port = port_llama();
@@ -1133,13 +1162,14 @@ fn handle_lac_status(
         ollama_up,
         stats_json,
     );
-    json_response(&mut stream, "200 OK", &body)
+    json_response(&mut stream, "200 OK", &body, cors)
 }
 
 fn handle_lac_switch(
     mut stream: TcpStream,
     path: &str,
     preferred: &Arc<AtomicUsize>,
+    cors: Option<&str>,
 ) -> io::Result<()> {
     let query = path.split('?').nth(1).unwrap_or("");
     let target_param = query
@@ -1172,12 +1202,26 @@ fn handle_lac_switch(
         backend_name(new_target),
         backend_port(new_target)
     );
-    json_response(&mut stream, "200 OK", &body)
+    json_response(&mut stream, "200 OK", &body, cors)
 }
 
-fn handle_options(mut stream: TcpStream) -> io::Result<()> {
+/// A CORS preflight is answered only for an allow-listed origin. With no
+/// `Access-Control-Allow-Origin` the browser's preflight fails and the real
+/// request is never sent — the outcome we want for a page we did not
+/// authorize, and decided by the same allow-list as the real gate, so the
+/// two can never disagree.
+fn handle_options(mut stream: TcpStream, cors: Option<&str>) -> io::Result<()> {
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-    let resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    let methods = if cors.is_some() {
+        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\n"
+    } else {
+        ""
+    };
+    let resp = format!(
+        "HTTP/1.1 204 No Content\r\n{}Content-Length: 0\r\nConnection: close\r\n{}\r\n",
+        cors_headers(cors),
+        methods
+    );
     stream.write_all(resp.as_bytes())
 }
 
@@ -1577,17 +1621,172 @@ fn is_loopback_peer(addr: &SocketAddr) -> bool {
     addr.ip().is_loopback()
 }
 
+/// Length-safe constant-time comparison. The loop runs over the longer of
+/// the two inputs, with the absent tail XORed against zero, so a wrong-length
+/// token costs the same as a right-length one. Returning early on a length
+/// mismatch — which this used to do — answers "how long is the token?" in
+/// O(1) rather than O(n), which is the one thing a token comparison must not
+/// leak.
 fn constant_time_eq(a: &str, b: &str) -> bool {
     let ab = a.as_bytes();
     let bb = b.as_bytes();
-    if ab.len() != bb.len() {
-        return false;
-    }
-    let mut diff: u8 = 0;
-    for i in 0..ab.len() {
-        diff |= ab[i] ^ bb[i];
+    // The length difference folds into the accumulator, so it cannot short
+    // circuit the loop either. u8 is enough: a length difference only ever
+    // needs its low bits to make the result non-zero.
+    let mut diff: u8 = (ab.len() ^ bb.len()) as u8;
+    for i in 0..ab.len().max(bb.len()) {
+        diff |= ab.get(i).copied().unwrap_or(0) ^ bb.get(i).copied().unwrap_or(0);
     }
     diff == 0
+}
+
+// ------------------------------------------------- the browser attack surface --
+
+/// A loopback gateway is reachable by every web page the user has open, and
+/// by nothing else, so it inherits the web's attacker model. Two distinct
+/// attacks follow, and each needs its own control:
+///
+/// 1. **Drive-by CORS.** A page on `https://evil.example` can `fetch` the
+///    gateway and — because every response used to carry
+///    `Access-Control-Allow-Origin: *` — *read* the reply: `/lac/status`
+///    (backend topology, tailnet addresses, measured latency),
+///    `/lac/switch` (which backend the gateway uses), and the completions
+///    themselves. A browser always attaches `Origin` to a cross-origin
+///    request, so requiring the operator to allow-list the origin closes it.
+///    A native client sends no `Origin` at all, so Studio, OpenCode, curl and
+///    the local SDKs pay nothing for this.
+///
+/// 2. **DNS rebinding.** The attacker rebinds `evil.example` to 127.0.0.1.
+///    The browser then treats the gateway as *same-origin* — it sends no
+///    `Origin` and CORS never applies — so control 1 is bypassed outright.
+///    The only signal left is `Host: evil.example`, which the browser takes
+///    from the page's own URL. So a DNS name is refused unless the operator
+///    allow-listed it. `Sec-Fetch-Site` is deliberately not consulted: under
+///    rebinding it reads `same-origin`, so it cannot be the control that
+///    matters, and trusting it would only add a way to be wrong.
+///
+/// A valid Bearer token is the single exception to the Host rule, and it is
+/// a proof rather than a heuristic: a rebound request is same-origin to the
+/// attacker's page, which has never seen the token, so it cannot present
+/// one. That keeps Tailscale MagicDNS working against a token-protected
+/// gateway without reopening the hole on a token-less one.
+const HOST_MISDIRECTED: &str = "{\"error\":{\"message\":\"gateway does not serve this Host; use an IP address or localhost, or add the name to LAC_ALLOWED_HOSTS\",\"type\":\"lac_router_host\",\"code\":421}}";
+const ORIGIN_FORBIDDEN: &str = "{\"error\":{\"message\":\"browser origin not allowed; add it to LAC_ALLOWED_ORIGINS, or use a native client which sends no Origin\",\"type\":\"lac_router_origin\",\"code\":403}}";
+
+/// Comma/space separated env list, lowercased, control characters dropped.
+/// A control character in an allow-list entry would be echoed into a response
+/// header, so such an entry is discarded rather than trusted.
+fn allow_list_env(name: &str) -> Vec<String> {
+    env::var(name)
+        .ok()
+        .map(|value| {
+            value
+                .split([',', ' ', '\t'])
+                .map(str::trim)
+                .filter(|entry| {
+                    !entry.is_empty() && !entry.bytes().any(|byte| byte.is_ascii_control())
+                })
+                .map(str::to_lowercase)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The authority a `Host` header names, normalized for comparison: no port,
+/// no IPv6 brackets, no trailing root dot, lowercase. The one field a
+/// rebinding attacker fully controls.
+fn host_authority(value: &str) -> String {
+    let trimmed = value.trim();
+    let without_port = if let Some(rest) = trimmed.strip_prefix('[') {
+        // Bracketed IPv6 literal, with or without a port.
+        rest.split(']').next().unwrap_or(rest)
+    } else if trimmed.matches(':').count() == 1 {
+        // Exactly one colon, and only a numeric (or empty, per RFC 3986)
+        // suffix after it, is a port. More than one colon means an
+        // unbracketed IPv6 literal, whose last group is numeric too — `::1`
+        // must not be read as host `:` port 1. A non-numeric suffix is not a
+        // port at all and is left in place, where it fails the allow-list and
+        // the IP check.
+        match trimmed.rsplit_once(':') {
+            Some((head, tail))
+                if tail.is_empty() || tail.bytes().all(|b| b.is_ascii_digit()) =>
+            {
+                head
+            }
+            _ => trimmed,
+        }
+    } else {
+        trimmed
+    };
+    without_port.trim_end_matches('.').to_lowercase()
+}
+
+fn is_ip_literal(host: &str) -> bool {
+    host.parse::<std::net::IpAddr>().is_ok()
+}
+
+/// First occurrence wins, matching the auth gate: a second `Host` must not
+/// be able to contradict the authority the gateway agreed to serve.
+fn first_header(headers: &[u8], wanted: &str) -> Option<String> {
+    let head = String::from_utf8_lossy(headers);
+    for line in head.lines() {
+        if line.trim().is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.trim().eq_ignore_ascii_case(wanted) {
+                return Some(value.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Whether this request's `Host` names an authority the gateway answers for.
+/// `token_ok` is proof of a non-browser client (see the note above).
+///
+/// A missing `Host` is accepted: that is an HTTP/1.0 client, and every
+/// browser sends one, so its absence cannot be a rebinding vector.
+fn host_served(value: Option<&str>, token_ok: bool, allowed: &[String]) -> bool {
+    let Some(value) = value else {
+        return true;
+    };
+    let host = host_authority(value);
+    if host.is_empty() {
+        return false;
+    }
+    if is_ip_literal(&host) || host == "localhost" {
+        return true;
+    }
+    if allowed.contains(&host) {
+        return true;
+    }
+    token_ok
+}
+
+/// Whether this request's `Origin` is one the operator allow-listed, and so
+/// the only value that may ever be echoed in `Access-Control-Allow-Origin`.
+///
+/// Returning the *matched entry* rather than the request's own string is the
+/// point: the echoed value is then always a string the operator wrote, so it
+/// cannot carry a header injection, and it is always lowercase-normalized
+/// against the same comparison that allowed it.
+///
+/// `None` covers both "no Origin, therefore a native client" and "an Origin
+/// we refuse". Keeping those from being confused is the whole design: the
+/// first gets a CORS-free response, the second is rejected outright.
+fn cors_origin(value: Option<&str>, allowed: &[String]) -> Option<String> {
+    let origin = value?.trim();
+    if origin.is_empty() || origin.len() > 512 {
+        return None;
+    }
+    // A `*` entry is an explicit operator choice to expose the gateway to any
+    // page. It is honored, and the startup banner says so out loud.
+    if allowed.iter().any(|entry| entry == "*") {
+        return Some("*".to_string());
+    }
+    let needle = origin.to_lowercase();
+    allowed.iter().find(|entry| **entry == needle).cloned()
 }
 
 /// Extract `Bearer <token>` from raw request headers (case-insensitive).
@@ -1624,11 +1823,12 @@ fn forwarded_request(headers: &[u8]) -> bool {
     })
 }
 
-fn unauthorized(stream: &mut TcpStream) -> io::Result<()> {
+fn unauthorized(stream: &mut TcpStream, cors: Option<&str>) -> io::Result<()> {
     json_response(
         stream,
         "401 Unauthorized",
         "{\"error\":{\"message\":\"missing or invalid Bearer token (set LAC_API_TOKEN)\",\"type\":\"lac_router_auth\",\"code\":401}}",
+        cors,
     )
 }
 /// Keep-alive tick for SSE streams. Env-overridable for tests
@@ -2345,14 +2545,20 @@ impl Drop for InflightGuard {
 /// Uniform 503 for "nothing is serving". Used twice: once before the body
 /// is read (fail fast) and once after (a model hint may have reordered
 /// the candidates and emptied the list). Same body, same status, either way.
-fn no_backend_503(client: &mut TcpStream, rid_n: usize, method: &str, path: &str) {
+fn no_backend_503(
+    client: &mut TcpStream,
+    rid_n: usize,
+    method: &str,
+    path: &str,
+    cors: Option<&str>,
+) {
     let err_body = format!(
         "{{\"error\":{{\"message\":\"No LAC inference backend is serving (MLX :{}, llama :{}, Ollama :{} all down or breaker-tripped). Start one with `lac serve mlx`.\",\"type\":\"lac_router_error\",\"code\":503}}}}",
         port_mlx(),
         port_llama(),
         port_ollama()
     );
-    let _ = json_response(client, "503 Service Unavailable", &err_body);
+    let _ = json_response(client, "503 Service Unavailable", &err_body, cors);
     eprintln!("[lac-router rid={}] {} {} -> 503 no-backend", rid_n, method, path);
 }
 
@@ -2381,12 +2587,12 @@ fn handle_connection(
         Ok(b) => b,
         Err(HeaderError::TooLarge) => {
             let mut c = client;
-            let _ = json_response(&mut c, "431 Request Header Fields Too Large", &format!("{{\"error\":{{\"message\":\"request headers exceed the {} KiB limit\",\"type\":\"lac_router_headers\",\"code\":431}}}}", MAX_HEADERS / 1024));
+            let _ = json_response(&mut c, "431 Request Header Fields Too Large", &format!("{{\"error\":{{\"message\":\"request headers exceed the {} KiB limit\",\"type\":\"lac_router_headers\",\"code\":431}}}}", MAX_HEADERS / 1024), None);
             return;
         }
         Err(HeaderError::Incomplete) => {
             let mut c = client;
-            let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"incomplete request\"}}");
+            let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"incomplete request\"}}", None);
             return;
         }
     };
@@ -2394,15 +2600,54 @@ fn handle_connection(
     let initial_text = String::from_utf8_lossy(&initial);
     if !valid_request_line(initial_text.lines().next().unwrap_or("")) {
         let mut c = client;
-        let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"invalid request line\"}}");
+        let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"invalid request line\"}}", None);
+        return;
+    }
+
+    // Browser-facing gates, ahead of every other decision including auth, so
+    // a rebound or drive-by request is refused before it can read a status,
+    // move the preferred backend, or reach an inference backend. See the note
+    // above `host_served` for why both controls are needed.
+    let allowed_origins = allow_list_env("LAC_ALLOWED_ORIGINS");
+    let request_origin = first_header(&initial, "origin");
+    // The verdict is reused for this connection's CORS block, so a refused
+    // origin gets a 403 with no CORS headers: the page that provoked it
+    // cannot read the refusal either.
+    let cors = cors_origin(request_origin.as_deref(), &allowed_origins);
+    if request_origin.is_some() && cors.is_none() {
+        let mut c = client;
+        let _ = json_response(&mut c, "403 Forbidden", ORIGIN_FORBIDDEN, None);
+        eprintln!(
+            "[lac-router rid={}] {} {} -> 403 origin not allowed",
+            rid_n, method, path
+        );
+        return;
+    }
+    // The token verdict is computed once, here: the Host gate needs it as
+    // proof that this is not a browser, and the auth gate below reuses it.
+    let token_ok = !expected_token.is_empty()
+        && bearer_from(&initial)
+            .map(|t| constant_time_eq(&t, &expected_token))
+            .unwrap_or(false);
+    if !host_served(
+        first_header(&initial, "host").as_deref(),
+        token_ok,
+        &allow_list_env("LAC_ALLOWED_HOSTS"),
+    ) {
+        let mut c = client;
+        let _ = json_response(&mut c, "421 Misdirected Request", HOST_MISDIRECTED, cors.as_deref());
+        eprintln!(
+            "[lac-router rid={}] {} {} -> 421 host not served",
+            rid_n, method, path
+        );
         return;
     }
     if method == "OPTIONS" {
         // Answered before the auth gate on purpose: a CORS preflight never
         // carries credentials, so demanding one would just break browsers.
-        // The reply is a static 204 with a wildcard CORS header and no
-        // backend contact, so it leaks nothing about this deployment.
-        let _ = handle_options(client);
+        // The reply is a static 204 with no backend contact, so it leaks
+        // nothing about this deployment.
+        let _ = handle_options(client, cors.as_deref());
         return;
     }
 
@@ -2414,17 +2659,11 @@ fn handle_connection(
         .unwrap_or(false);
     let proxy_forwarded = forwarded_request(&initial);
     let auth_required = !peer_loopback || proxy_forwarded || !expected_token.is_empty();
-    if auth_required {
-        let ok = !expected_token.is_empty()
-            && bearer_from(&initial)
-                .map(|t| constant_time_eq(&t, &expected_token))
-                .unwrap_or(false);
-        if !ok {
-            let mut c = client;
-            let _ = unauthorized(&mut c);
-            eprintln!("[lac-router rid={}] {} {} -> 401 remote-auth", rid_n, method, path);
-            return;
-        }
+    if auth_required && !token_ok {
+        let mut c = client;
+        let _ = unauthorized(&mut c, cors.as_deref());
+        eprintln!("[lac-router rid={}] {} {} -> 401 remote-auth", rid_n, method, path);
+        return;
     }
 
     let initial_headers = find_headers_end(&initial).unwrap_or(initial.len());
@@ -2432,7 +2671,7 @@ fn handle_connection(
         Ok(value) => value,
         Err(_) => {
             let mut c = client;
-            let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"invalid request header\"}}");
+            let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"invalid request header\"}}", cors.as_deref());
             return;
         }
     };
@@ -2440,18 +2679,18 @@ fn handle_connection(
         Ok(value) => value,
         Err(_) => {
             let mut c = client;
-            let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"invalid Transfer-Encoding\"}}");
+            let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"invalid Transfer-Encoding\"}}", cors.as_deref());
             return;
         }
     };
     if request_content_length.is_some_and(|length| length > MAX_BODY) {
         let mut c = client;
-        let _ = json_response(&mut c, "413 Payload Too Large", "{\"error\":{\"message\":\"request body exceeds the 16 MiB limit\"}}");
+        let _ = json_response(&mut c, "413 Payload Too Large", "{\"error\":{\"message\":\"request body exceeds the 16 MiB limit\"}}", cors.as_deref());
         return;
     }
     if request_content_length.is_some() && chunked_request {
         let mut c = client;
-        let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"ambiguous request framing\"}}");
+        let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"ambiguous request framing\"}}", cors.as_deref());
         return;
     }
     if request_content_length.is_none()
@@ -2459,7 +2698,7 @@ fn handle_connection(
         && !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS")
     {
         let mut c = client;
-        let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"request body requires Content-Length or chunked framing\"}}");
+        let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"request body requires Content-Length or chunked framing\"}}", cors.as_deref());
         return;
     }
 
@@ -2472,12 +2711,13 @@ fn handle_connection(
             &routes,
             started,
             n,
+            cors.as_deref(),
         );
         return;
     }
 
     if path.starts_with("/lac/switch") {
-        let _ = handle_lac_switch(client, &path, &preferred);
+        let _ = handle_lac_switch(client, &path, &preferred, cors.as_deref());
         return;
     }
 
@@ -2486,7 +2726,7 @@ fn handle_connection(
     if method == "GET" && (path == "/v1/models" || path.starts_with("/v1/models?")) {
         if let Some(body) = merged_models(&hc, &routes) {
             let mut c = client;
-            let _ = json_response(&mut c, "200 OK", &body);
+            let _ = json_response(&mut c, "200 OK", &body, cors.as_deref());
             eprintln!("[lac-router rid={}] GET /v1/models -> merged ({} bytes)", rid_n, body.len());
             return;
         }
@@ -2495,7 +2735,7 @@ fn handle_connection(
 
     let pref = preferred.load(Ordering::SeqCst);
     if pick_backends(pref, &hc, &stats, None).is_empty() {
-        no_backend_503(&mut client, rid_n, &method, &path);
+        no_backend_503(&mut client, rid_n, &method, &path, cors.as_deref());
         return;
     }
 
@@ -2512,18 +2752,18 @@ fn handle_connection(
         Ok(frame) => frame,
         Err(BodyError::TooLarge) => {
             let mut c = client;
-            let _ = json_response(&mut c, "413 Payload Too Large", "{\"error\":{\"message\":\"request body exceeds the 16 MiB limit\"}}");
+            let _ = json_response(&mut c, "413 Payload Too Large", "{\"error\":{\"message\":\"request body exceeds the 16 MiB limit\"}}", cors.as_deref());
             return;
         }
         Err(BodyError::Busy) => {
             let mut c = client;
-            let _ = retryable_response(&mut c, "503 Service Unavailable", BODY_BUDGET_TYPE, BODY_BUDGET_BUSY, 5);
+            let _ = retryable_response(&mut c, "503 Service Unavailable", BODY_BUDGET_TYPE, BODY_BUDGET_BUSY, 5, cors.as_deref());
             eprintln!("[lac-router rid={}] {} {} -> 503 body-budget", rid_n, method, path);
             return;
         }
         Err(BodyError::Invalid) => {
             let mut c = client;
-            let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"invalid or incomplete request body\"}}");
+            let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"invalid or incomplete request body\"}}", cors.as_deref());
             return;
         }
     };
@@ -2533,9 +2773,9 @@ fn handle_connection(
         // so trailing bytes can only be a second request.
         let bodyless_method = matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS");
         if bodyless_method || request_content_length.is_some() || chunked_request {
-            let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"pipelined requests are not supported\"}}");
+            let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"pipelined requests are not supported\"}}", cors.as_deref());
         } else {
-            let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"request body requires Content-Length or chunked framing\"}}");
+            let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"request body requires Content-Length or chunked framing\"}}", cors.as_deref());
         }
         return;
     }
@@ -2563,7 +2803,7 @@ fn handle_connection(
     let sanitized = sanitize_upstream_request(&frame.wire);
     if !body_reservation.try_reserve(sanitized.capacity()) {
         let mut c = client;
-        let _ = retryable_response(&mut c, "503 Service Unavailable", BODY_BUDGET_TYPE, BODY_BUDGET_BUSY, 5);
+        let _ = retryable_response(&mut c, "503 Service Unavailable", BODY_BUDGET_TYPE, BODY_BUDGET_BUSY, 5, cors.as_deref());
         eprintln!("[lac-router rid={}] {} {} -> 503 body-budget (relay)", rid_n, method, path);
         return;
     }
@@ -2571,7 +2811,7 @@ fn handle_connection(
 
     let candidates = pick_backends(pref, &hc, &stats, model_hint);
     if candidates.is_empty() {
-        no_backend_503(&mut client, rid_n, &method, &path);
+        no_backend_503(&mut client, rid_n, &method, &path, cors.as_deref());
         return;
     }
 
@@ -2678,6 +2918,7 @@ fn handle_connection(
                     &mut c,
                     "501 Not Implemented",
                     "{\"error\":{\"message\":\"upstream protocol upgrades are not supported\"}}",
+                    cors.as_deref(),
                 );
                 return;
             }
@@ -2792,7 +3033,7 @@ fn handle_connection(
         }
     );
     let mut c = client;
-    let _ = json_response(&mut c, "502 Bad Gateway", &err_body);
+    let _ = json_response(&mut c, "502 Bad Gateway", &err_body, cors.as_deref());
     eprintln!(
         "[lac-router rid={}] {} {} -> 502 no-backend-served ({:.1}s)",
         rid_n,
@@ -2824,20 +3065,15 @@ fn main() {
 
     let host = bind_host();
     let token = api_token();
-    // Fail closed: a non-loopback bind without a token would expose the
-    // gateway unauthenticated — refuse to start instead.
-    if !is_loopback_host(&host)
-        && env::var("LAC_ALLOW_INSECURE_BIND").ok().as_deref() != Some("1")
-    {
-        eprintln!(
-            "Refusing non-loopback bind {} without explicit LAC_ALLOW_INSECURE_BIND=1. Use tailscale serve --https in front of loopback.",
-            host
-        );
-        std::process::exit(1);
-    }
+    // Fail closed, and in one place: a non-loopback bind without a token
+    // would expose the gateway unauthenticated. This used to be two stacked
+    // checks, the first gated on LAC_ALLOW_INSECURE_BIND=1 — but the second
+    // refuses an empty token regardless, so that escape hatch could never
+    // actually let an unauthenticated bind through. One check, no flag: the
+    // message an operator reads now matches what the code does.
     if !is_loopback_host(&host) && token.is_empty() {
         eprintln!(
-            "Refusing to bind lac-router to {} without LAC_API_TOKEN (remote would be open). Set LAC_API_TOKEN.",
+            "Refusing to bind lac-router to {} without LAC_API_TOKEN (every remote peer would be unauthenticated). Set LAC_API_TOKEN, or bind loopback and put `tailscale serve --https` in front of it.",
             host
         );
         std::process::exit(1);
@@ -2882,6 +3118,28 @@ fn main() {
             "Bearer required for non-loopback (fail-closed)"
         }
     );
+    // The browser gates are env-tunable like every other limit here, and a
+    // silent default is how a gateway ends up reachable from a web page, so
+    // the effective policy is printed rather than assumed.
+    let allowed_hosts = allow_list_env("LAC_ALLOWED_HOSTS");
+    let allowed_origins = allow_list_env("LAC_ALLOWED_ORIGINS");
+    eprintln!(
+        "  Host gate: IP literals + localhost{}",
+        if allowed_hosts.is_empty() {
+            "; DNS names need LAC_ALLOWED_HOSTS (or a Bearer token)"
+        } else {
+            " + operator allow-list"
+        }
+    );
+    if allowed_origins.iter().any(|entry| entry == "*") {
+        eprintln!(
+            "  Browser origins: ANY (LAC_ALLOWED_ORIGINS=*) — every page can read this gateway"
+        );
+    } else if allowed_origins.is_empty() {
+        eprintln!("  Browser origins: none (native clients only; browsers get 403)");
+    } else {
+        eprintln!("  Browser origins: {}", allowed_origins.join(", "));
+    }
     eprintln!(
         "  Proxying /v1/* -> MLX :{} | llama :{} | Ollama :{}",
         port_mlx(),
@@ -2928,6 +3186,7 @@ fn main() {
                         BUSY_TYPE,
                         &format!("router saturated ({} inflight)", MAX_INFLIGHT),
                         1,
+                        None,
                     );
                     continue;
                 }
@@ -3105,12 +3364,14 @@ mod tests {
             BUSY_TYPE,
             "router saturated (128 inflight)",
             1,
+            None,
         );
         let budget = retryable_http_response(
             "503 Service Unavailable",
             BODY_BUDGET_TYPE,
             BODY_BUDGET_BUSY,
             5,
+            None,
         );
         for response in [&busy, &budget] {
             assert!(response.starts_with("HTTP/1.1 503"), "{response}");
@@ -3472,5 +3733,199 @@ mod tests {
         let peer_remote: SocketAddr = "100.64.0.5:1234".parse().unwrap();
         assert!(is_loopback_peer(&peer_lo));
         assert!(!is_loopback_peer(&peer_remote));
+    }
+
+    #[test]
+    fn token_comparison_does_not_leak_length() {
+        assert!(constant_time_eq("abc", "abc"));
+        assert!(constant_time_eq("", ""));
+        assert!(!constant_time_eq("abc", "abd"));
+        assert!(!constant_time_eq("abc", "abcd"));
+        assert!(!constant_time_eq("abcd", "abc"));
+        // A length difference must reach the accumulator rather than skip the
+        // loop, so a wrong-length guess is not answered in constant time.
+        // Exercised here as behaviour: every length difference is a mismatch,
+        // including the ones that differ only in length.
+        for a in ["", "a", "ab", "abc", "abcd", "abcde"] {
+            for b in ["", "a", "ab", "abc", "abcd", "abcde"] {
+                assert_eq!(constant_time_eq(a, b), a == b, "{a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn host_authority_normalizes_port_brackets_and_case() {
+        assert_eq!(host_authority("127.0.0.1:8000"), "127.0.0.1");
+        assert_eq!(host_authority("127.0.0.1"), "127.0.0.1");
+        assert_eq!(host_authority("LocalHost:8000"), "localhost");
+        assert_eq!(host_authority("localhost."), "localhost");
+        assert_eq!(host_authority("[::1]:8000"), "::1");
+        assert_eq!(host_authority("[::1]"), "::1");
+        // An unbracketed IPv6 literal is all colons and must not be mistaken
+        // for a host:port pair.
+        assert_eq!(host_authority("::1"), "::1");
+        assert_eq!(host_authority("fe80::1"), "fe80::1");
+        assert_eq!(host_authority("  evil.example:8000  "), "evil.example");
+        // A trailing colon is a separator with no port after it, not a port.
+        assert_eq!(host_authority("evil.example:"), "evil.example");
+        assert_eq!(host_authority(""), "");
+    }
+
+    #[test]
+    fn host_gate_serves_ip_and_localhost_only_without_a_token() {
+        let allowed: Vec<String> = Vec::new();
+        for host in [
+            "127.0.0.1:8000",
+            "127.0.0.1",
+            "localhost",
+            "localhost:8000",
+            "LOCALHOST.",
+            "[::1]:8000",
+            "::1",
+            "100.64.0.5:8000",
+            // Any IP literal is served, not just loopback: the rule is "not a
+            // DNS name", because a rebound request can only ever carry the
+            // attacker's *name* in Host. A browser cannot be made to send an
+            // IP literal in Host for a page loaded from somewhere else.
+            "0.0.0.0:8000",
+        ] {
+            assert!(host_served(Some(host), false, &allowed), "{host}");
+        }
+        // The rebinding vector: an attacker-chosen DNS name.
+        for host in [
+            "evil.example",
+            "evil.example:8000",
+            "attacker.test",
+            "localhost.evil.example",
+            "127.0.0.1.evil.example",
+            "0.0.0.0.evil.example",
+        ] {
+            assert!(!host_served(Some(host), false, &allowed), "{host}");
+        }
+        // A missing Host is an HTTP/1.0 client; every browser sends one, so
+        // its absence cannot be a rebinding vector.
+        assert!(host_served(None, false, &allowed));
+        // An empty authority is a malformed Host, not a wildcard.
+        assert!(!host_served(Some(""), false, &allowed));
+        assert!(!host_served(Some(":8000"), false, &allowed));
+    }
+
+    #[test]
+    fn host_gate_opens_for_the_operator_allowlist_or_a_proven_token() {
+        let allowed = vec!["studio.local".to_string(), "box.tail1234.ts.net".to_string()];
+        assert!(host_served(Some("studio.local:8000"), false, &allowed));
+        assert!(host_served(
+            Some("box.tail1234.ts.net:8000"),
+            false,
+            &allowed
+        ));
+        // Allow-list matching is on the normalized authority, so a port or a
+        // trailing dot in the header does not miss it.
+        assert!(host_served(Some("STUDIO.local"), false, &allowed));
+        assert!(!host_served(Some("studio.local.evil.example"), false, &allowed));
+        assert!(!host_served(Some("evil.example"), false, &allowed));
+        // A valid Bearer token is proof of a non-browser client, which is what
+        // keeps MagicDNS usable on a token-protected gateway.
+        assert!(host_served(
+            Some("mac.tail1234.ts.net:8000"),
+            true,
+            &allowed
+        ));
+        // And it is the *only* thing that opens it: a wrong token does not.
+        assert!(!host_served(Some("evil.example"), false, &allowed));
+    }
+
+    #[test]
+    fn cors_origin_refuses_by_default_and_echoes_only_what_was_allowed() {
+        let none: Vec<String> = Vec::new();
+        // No Origin at all: a native client, and the case that must never
+        // grow a CORS header.
+        assert_eq!(cors_origin(None, &none), None);
+        assert_eq!(cors_origin(Some("https://evil.example"), &none), None);
+        assert_eq!(cors_origin(Some("null"), &none), None);
+        assert_eq!(cors_origin(Some(""), &none), None);
+        assert_eq!(cors_origin(Some("   "), &none), None);
+
+        let allowed = vec!["https://app.example".to_string()];
+        // The echoed value is the allow-list entry, not the request's string:
+        // only a string the operator wrote can reach a response header.
+        assert_eq!(
+            cors_origin(Some("https://app.example"), &allowed).as_deref(),
+            Some("https://app.example")
+        );
+        // Matching is case-insensitive on scheme and host, as origins are.
+        assert_eq!(
+            cors_origin(Some("HTTPS://App.Example"), &allowed).as_deref(),
+            Some("https://app.example")
+        );
+        // Surrounding whitespace is trimmed, not required.
+        assert_eq!(
+            cors_origin(Some(" https://app.example "), &allowed).as_deref(),
+            Some("https://app.example")
+        );
+        // A prefix, a suffix, a different port and a different scheme are all
+        // different origins.
+        for other in [
+            "https://app.example.evil.test",
+            "https://app.example/",
+            "https://app.example:8443",
+            "http://app.example",
+            "https://evil.test",
+        ] {
+            assert_eq!(cors_origin(Some(other), &allowed), None, "{other}");
+        }
+        // An absurd Origin is refused rather than compared.
+        assert_eq!(cors_origin(Some(&"a".repeat(1024)), &allowed), None);
+        // An explicit `*` is the operator opting every page in.
+        assert_eq!(
+            cors_origin(Some("https://anything.test"), &["*".to_string()]).as_deref(),
+            Some("*")
+        );
+    }
+
+    #[test]
+    fn first_header_takes_the_first_occurrence() {
+        let req = b"GET / HTTP/1.1\r\nHost: first.example\r\nHost: second.example\r\nOrigin: https://a.test\r\nOrigin: https://b.test\r\n\r\n";
+        assert_eq!(
+            first_header(req, "host").as_deref(),
+            Some("first.example"),
+            "a second Host must not contradict the first"
+        );
+        assert_eq!(first_header(req, "origin").as_deref(), Some("https://a.test"));
+        assert_eq!(first_header(req, "HOST").as_deref(), Some("first.example"));
+        assert_eq!(first_header(req, "absent"), None);
+        // Nothing after the header block counts.
+        let after = b"GET / HTTP/1.1\r\nHost: real.example\r\n\r\nHost: smuggled.example\r\n";
+        assert_eq!(first_header(after, "host").as_deref(), Some("real.example"));
+    }
+
+    #[test]
+    fn cors_headers_are_absent_unless_an_origin_was_allowed() {
+        // The default reply carries no CORS header whatsoever: no Origin
+        // means no browser-readable surface.
+        let native = http_response("200 OK", "application/json", "{}", None);
+        assert!(!native.contains("Access-Control"), "{native}");
+        assert!(!native.contains("Vary"), "{native}");
+        // An allow-listed origin gets its own value back, never a wildcard
+        // the router chose on its own, plus Vary so a shared cache cannot
+        // hand that reply to a page that was not allowed.
+        let browser = http_response("200 OK", "application/json", "{}", Some("https://app.example"));
+        assert!(
+            browser.contains("Access-Control-Allow-Origin: https://app.example\r\n"),
+            "{browser}"
+        );
+        assert!(browser.contains("Vary: Origin\r\n"), "{browser}");
+        assert!(!browser.contains("Allow-Origin: *"), "{browser}");
+        // Header order and the Content-Length/body relationship still hold, or
+        // the client would mis-frame the response.
+        let head_end = browser.find("\r\n\r\n").expect("headers") + 4;
+        let declared: usize = browser
+            .lines()
+            .find_map(|line| line.strip_prefix("Content-Length: "))
+            .expect("length")
+            .trim()
+            .parse()
+            .expect("numeric");
+        assert_eq!(declared, browser.len() - head_end, "{browser}");
     }
 }

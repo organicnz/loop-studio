@@ -443,7 +443,64 @@ pub fn wait_for_http(port: u16, timeout: Duration) -> bool {
     false
 }
 
+/// Whether a supervising engine wrapper should launch again after an exit.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DaemonDecision {
+    Retry,
+    Stop,
+}
+
+/// Consecutive launches that failed without the engine ever answering HTTP.
+pub const GIVE_UP_AFTER: u32 = 5;
+
+/// The retry decision, as a pure function of what has been observed.
+///
+/// Both `serve-mlx` and `serve-llama` are supervised by the same promise —
+/// "it comes back by itself at 3am" — so the policy lives here rather than
+/// being written twice and drifting.
+///
+/// The loop is for one failure: an engine that worked and then went away, a
+/// transient OOM at 3am. That retries forever, because it does recover on its
+/// own. The opposite case is a launch that never once answered HTTP: a typo'd
+/// model id, missing weights, a port nothing can bind. That does not recover,
+/// and retrying it every 60s left a daemon that looked alive to `launchctl`
+/// and served nothing until somebody read the log. So a run that has never
+/// been ready is bounded, and a run that has been ready is not.
+///
+/// `ever_ready` is the whole distinction, and it comes from each wrapper's
+/// readiness prober rather than a guess at the child's exit status.
+pub fn daemon_decision(ever_ready: bool, crashes: u32) -> DaemonDecision {
+    if ever_ready || crashes < GIVE_UP_AFTER {
+        DaemonDecision::Retry
+    } else {
+        DaemonDecision::Stop
+    }
+}
+
+/// Explanation for giving up, in one voice so both lanes say the same thing.
+pub fn daemon_give_up_reason(engine: &str, model: &str, port: u16, crashes: u32, last: &str) -> String {
+    format!(
+        "{engine} failed {crashes} times in a row and never answered HTTP on 127.0.0.1:{port} \
+         ({last}). That is a permanent fault, not a transient one — check the model id \
+         `{model}` and that nothing else holds the port. Not retrying; re-run once it is fixed."
+    )
+}
+
 // ------------------------------------------------------------------ volumes -
+
+/// The rule for turning a configured or recorded MLX port into a port the
+/// router will actually use: a trimmed, in-range, non-zero `u16`, or nothing.
+///
+/// Named and shared because `serve-mlx` writes `~/.lac/mlx.port` and this
+/// module reads it, and the two had drifted. The writer accepted a bare
+/// `parse()`, so `MLX_PORT=0` published `0`, handed `--port 0` to the engine
+/// (which makes the OS assign a random ephemeral port), and left the router
+/// re-reading a `0` it discards — so the lane stayed unfindable even after
+/// the variable was gone. A writer must never publish a value its own reader
+/// throws away, so the writer now calls this.
+pub fn mlx_port_from(raw: &str) -> Option<u16> {
+    raw.trim().parse::<u16>().ok().filter(|&port| port > 0)
+}
 
 /// Where the MLX lane lives: MLX_PORT env > serve-mlx's port file >
 /// default 8080. serve-mlx drifts to 8082+ when 8080 is taken; without
@@ -451,17 +508,13 @@ pub fn wait_for_http(port: u16, timeout: Duration) -> bool {
 /// The readiness gate still applies, so a stale port file is harmless.
 pub fn mlx_port() -> u16 {
     if let Ok(p) = env::var("MLX_PORT").or_else(|_| env::var("PORT")) {
-        if let Ok(port) = p.trim().parse::<u16>() {
-            if port > 0 {
-                return port;
-            }
+        if let Some(port) = mlx_port_from(&p) {
+            return port;
         }
     }
     if let Ok(s) = fs::read_to_string(format!("{}/.lac/mlx.port", home_dir())) {
-        if let Ok(port) = s.trim().parse::<u16>() {
-            if port > 0 {
-                return port;
-            }
+        if let Some(port) = mlx_port_from(&s) {
+            return port;
         }
     }
     8080
@@ -523,6 +576,26 @@ pub fn append_jsonl(path: &str, line: &str) {
         record.push('\n');
         let _ = f.write_all(record.as_bytes());
     }
+}
+
+/// The router's per-request usage log, and the rotated generation it keeps
+/// beside it, as (live, rotated).
+///
+/// One function, because the writer and the reader had drifted: the writer
+/// rotated to `router-usage.jsonl.1` while `kv-manage` looked for
+/// `router-usage.1.jsonl`. The rotated window was therefore never read, the
+/// documented "current + rotated window" sum was really just the current
+/// file, and the token estimate fell to near zero at every 8MB rotation and
+/// rebuilt from scratch. It also meant a reader landing in the window between
+/// the rename and the next append saw an empty live file and no `.1` under
+/// the name it knew, so it reported "no data" instead of the previous
+/// window's total.
+pub fn usage_log_paths() -> (String, String) {
+    let live = format!("{}/.lac/router-usage.jsonl", home_dir());
+    // `.jsonl.1`, the ordinary rotated-log suffix, and the name already on
+    // disk — so this adopts the existing file rather than orphaning it.
+    let rotated = format!("{live}.1");
+    (live, rotated)
 }
 
 pub fn now_unix() -> u64 {
@@ -999,8 +1072,58 @@ mod tests {
     }
 
     #[test]
-    fn plist_retarget_ports_across_macs() {
-        let tpl = r#"<?xml version="1.0"?>
+    fn retry_is_bounded_only_while_the_engine_has_never_worked() {
+        use DaemonDecision::*;
+        // Never ready: the permanent fault — a typo'd model id, missing
+        // weights, or a port nothing can bind. Bounded, so the daemon stops
+        // pretending to supervise something.
+        for crashes in 0..GIVE_UP_AFTER {
+            assert_eq!(daemon_decision(false, crashes), Retry, "crashes={crashes}");
+        }
+        assert_eq!(daemon_decision(false, GIVE_UP_AFTER), Stop);
+        assert_eq!(daemon_decision(false, GIVE_UP_AFTER + 50), Stop);
+        assert_eq!(daemon_decision(false, u32::MAX), Stop);
+        // Ever ready: a crash after a working lane is exactly the transient
+        // case the loop exists for, and it retries indefinitely.
+        for crashes in [0, 1, GIVE_UP_AFTER, 1000, u32::MAX] {
+            assert_eq!(daemon_decision(true, crashes), Retry, "crashes={crashes}");
+        }
+    }
+
+    #[test]
+    fn give_up_names_the_model_and_the_port() {
+        let reason = daemon_give_up_reason("llama-server", "org/typo:Q4_K_M", 8081, 5, "exit 1");
+        // An operator reading only this line has to be able to act on it.
+        assert!(reason.contains("llama-server"), "{reason}");
+        assert!(reason.contains("org/typo:Q4_K_M"), "{reason}");
+        assert!(reason.contains("8081"), "{reason}");
+        assert!(reason.contains("5 times"), "{reason}");
+        assert!(reason.contains("permanent"), "{reason}");
+    }
+
+    #[test]
+    fn mlx_port_rule_is_shared_by_writer_and_reader() {
+        // `serve-mlx` writes ~/.lac/mlx.port and this module reads it, so the
+        // two must agree on what a usable port is. The writer used to accept
+        // `0`, which the reader discards: the engine bound a random ephemeral
+        // port while the file said 0, and the lane stayed unfindable.
+        assert_eq!(mlx_port_from("8080"), Some(8080));
+        assert_eq!(mlx_port_from("  8082\n"), Some(8082));
+        assert_eq!(mlx_port_from("65535"), Some(65535));
+        for bad in ["0", "", "  ", "abc", "-1", "65536", "8080.5"] {
+            assert_eq!(mlx_port_from(bad), None, "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn usage_log_rotated_name_is_the_one_the_reader_asks_for() {
+        let (live, rotated) = usage_log_paths();
+        assert!(live.ends_with("/.lac/router-usage.jsonl"), "{live}");
+        assert_eq!(rotated, format!("{live}.1"), "{rotated}");
+    }
+
+    #[test]
+    fn plist_retarget_ports_across_macs() {        let tpl = r#"<?xml version="1.0"?>
 <dict>
     <key>ProgramArguments</key>
     <array>

@@ -8,6 +8,7 @@
 
 mod common;
 
+use std::env;
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::Path;
@@ -30,41 +31,152 @@ fn tm_excluded(path: &str) -> bool {
 }
 
 const ZPROFILE_MARKER: &str = "# >>> LAC env (managed by lac bootstrap) >>>";
+const ZPROFILE_END: &str = "# <<< LAC env <<<";
 
-fn ensure_zprofile(model_base: &str) {
-    let home = common::home_dir();
-    let zp = format!("{}/.zprofile", home);
-    let current = fs::read_to_string(&zp).unwrap_or_default();
-    if current.contains(ZPROFILE_MARKER) {
-        eprintln!("   zprofile hooks already present");
-        return;
+/// The managed block, and nothing else. Written between the two markers so a
+/// later run can replace exactly this region and never touch a line the user
+/// added.
+fn managed_block(model_base: &str) -> String {
+    format!(
+        "{ZPROFILE_MARKER}\nexport HF_HOME=\"{model_base}/hf\"\nexport HF_HUB_CACHE=\"{model_base}/hf/hub\"\nexport PATH=\"$HOME/.local/bin:$PATH\"\n{ZPROFILE_END}\n"
+    )
+}
+
+/// What happened to the managed block. `Failed` is separate from the rest
+/// because it is the one case that used to be reported as a warning while the
+/// run went on to print "all green".
+#[derive(Debug, PartialEq, Eq)]
+enum ZprofileOutcome {
+    /// Already correct — nothing written.
+    Unchanged,
+    /// No block present; one was appended.
+    Installed,
+    /// A block was present but recorded a different model library; it was
+    /// replaced in place.
+    Reconciled,
+    Failed(String),
+}
+
+/// Reconcile the managed block in `zp` against `model_base`.
+///
+/// The one-shot marker check this replaces was a substring test: present meant
+/// "nothing to do", forever. So the first bootstrap run decided where
+/// `HF_HOME` points and no later run could ever change it — including the run
+/// where `/Volumes/AIModels` finished mounting, or stopped being mounted. The
+/// file went on claiming an internal-disk path while every other step in the
+/// same run used the external volume, and the two halves of the model library
+/// silently diverged. Mount state is exactly the thing that changes; a
+/// one-shot marker cannot be the right tool for it.
+fn ensure_zprofile_in(zp: &str, model_base: &str) -> ZprofileOutcome {
+    let current = fs::read_to_string(zp).unwrap_or_default();
+    let desired = managed_block(model_base);
+    let start = current.find(ZPROFILE_MARKER);
+    let end = current.find(ZPROFILE_END);
+    let updated = match (start, end) {
+        (Some(start), Some(end)) if end > start => {
+            // Take the whole end line with it, so the replacement cannot
+            // inherit a stray fragment of the old block.
+            let after = current[end..]
+                .find('\n')
+                .map(|nl| end + nl + 1)
+                .unwrap_or(current.len());
+            if current[start..after] == desired {
+                return ZprofileOutcome::Unchanged;
+            }
+            let mut out = String::with_capacity(current.len() + desired.len());
+            out.push_str(&current[..start]);
+            out.push_str(&desired);
+            out.push_str(&current[after..]);
+            out
+        }
+        // No complete managed block. If a start marker exists with no end
+        // marker the file was hand-edited into a broken state; appending a
+        // fresh block leaves the orphan visible rather than silently consuming
+        // text the user may rely on.
+        _ => {
+            let mut out = current;
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push('\n');
+            out.push_str(&desired);
+            out
+        }
+    };
+    match common::atomic_write(zp, &updated) {
+        Ok(()) if start.is_some() && end.is_some() => ZprofileOutcome::Reconciled,
+        Ok(()) => ZprofileOutcome::Installed,
+        Err(e) => ZprofileOutcome::Failed(e.to_string()),
     }
-    let block = format!(
-        "\n{1}\n\
-         export HF_HOME=\"{0}/hf\"\n\
-         export HF_HUB_CACHE=\"{0}/hf/hub\"\n\
-         export PATH=\"$HOME/.local/bin:$PATH\"\n\
-         # <<< LAC env <<<\n",
-        model_base,
-        ZPROFILE_MARKER
-    );
-    let mut new = current;
-    if !new.ends_with('\n') && !new.is_empty() {
-        new.push('\n');
+}
+
+fn ensure_zprofile(model_base: &str) -> bool {
+    let zp = format!("{}/.zprofile", common::home_dir());
+    match ensure_zprofile_in(&zp, model_base) {
+        ZprofileOutcome::Unchanged => {
+            eprintln!("   zprofile hooks already correct");
+            true
+        }
+        ZprofileOutcome::Installed => {
+            eprintln!("   zprofile hooks installed in {}", zp);
+            true
+        }
+        ZprofileOutcome::Reconciled => {
+            eprintln!("   zprofile hooks updated to {}", model_base);
+            true
+        }
+        ZprofileOutcome::Failed(e) => {
+            eprintln!("   zprofile install failed: {}", e);
+            eprintln!(
+                "   HF_HOME/HF_HUB_CACHE are NOT set for new shells; every model download will \
+                 use the wrong cache until this succeeds"
+            );
+            false
+        }
     }
-    new.push_str(&block);
-    match common::atomic_write(&zp, &new) {
-        Ok(()) => eprintln!("   zprofile hooks installed in {}", zp),
-        Err(e) => eprintln!("   zprofile install failed: {}", e),
+}
+
+/// Copy one template file, reporting what actually happened. `fs::copy` on a
+/// directory always fails with EISDIR, and the old loop tried every entry in
+/// `templates/loops` including subdirectories, then printed "installed loop"
+/// for a file that was never created.
+fn install_template(src: &Path, dest: &str) -> Result<bool, String> {
+    let meta = match fs::metadata(src) {
+        Ok(m) => m,
+        Err(e) => return Err(format!("{}: {e}", src.display())),
+    };
+    if !meta.is_file() {
+        // Not an error: a nested directory in the template tree is a layout
+        // choice, not a broken install.
+        return Ok(false);
+    }
+    match fs::copy(src, dest) {
+        Ok(_) => Ok(true),
+        Err(e) => Err(format!("{} -> {dest}: {e}", src.display())),
     }
 }
 
 fn main() {
     common::ignore_sigpipe();
     eprintln!("=== LAC bootstrap v2.6 (Rust, idempotent) ===");
-    let home = common::home_dir();
+    // `common::home_dir()` falls back to "." when $HOME is unset, which turns
+    // every path below into a relative one. Bootstrap would then create
+    // ./.zprofile and ./.ollama in whatever directory it was invoked from and
+    // report success. Refuse instead: a setup tool with no idea where home is
+    // has nothing useful to do.
+    let home = match env::var("HOME") {
+        Ok(h) if !h.trim().is_empty() => h,
+        _ => {
+            eprintln!("$HOME is not set, so there is no home directory to set up.");
+            eprintln!("Run this from a login shell, or set HOME first.");
+            std::process::exit(1);
+        }
+    };
     let root = get_project_root();
+    // Two counters, because "you may not need this" and "I tried and it did
+    // not work" are different things and were being reported the same way.
     let mut warns = 0;
+    let mut failures = 0;
 
     // 1. Homebrew
     eprintln!("1. Ensuring Homebrew...");
@@ -161,7 +273,13 @@ fn main() {
     // 7. Ollama symlink (migrate-aware, never destroy data).
     eprintln!("7. Setting up ollama symlink...");
     let ollama_parent = format!("{}/.ollama", home);
-    let _ = fs::create_dir_all(&ollama_parent);
+    // Checked: step 7 writes a symlink inside this directory, so a failure
+    // here is the reason that step fails, and the operator should be told
+    // which one to look at.
+    if let Err(e) = fs::create_dir_all(&ollama_parent) {
+        eprintln!("   FAILED {}: {}", ollama_parent, e);
+        failures += 1;
+    }
     let target = format!("{}/ollama", model_base);
     let link = format!("{}/models", ollama_parent);
     match fs::symlink_metadata(&link) {
@@ -197,31 +315,64 @@ fn main() {
     // 8. Kanban templates — never overwrite user edits.
     eprintln!("8. Initializing Kanban task & loop templates...");
     let loops_dir = format!("{}/todo/lac-loops", home);
-    let _ = fs::create_dir_all(&loops_dir);
+    if let Err(e) = fs::create_dir_all(&loops_dir) {
+        eprintln!("   FAILED {}: {}", loops_dir, e);
+        failures += 1;
+    }
     let templates_loops = format!("{}/templates/loops", root);
-    if let Ok(entries) = fs::read_dir(&templates_loops) {
-        for entry in entries.flatten() {
-            let dest = format!("{}/{}", loops_dir, entry.file_name().to_string_lossy());
-            if fs::metadata(&dest).is_ok() {
-                eprintln!("   keeping existing: {}", dest);
-            } else {
-                let _ = fs::copy(entry.path(), &dest);
-                eprintln!("   installed loop: {}", dest);
+    match fs::read_dir(&templates_loops) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let dest = format!("{}/{}", loops_dir, entry.file_name().to_string_lossy());
+                if fs::metadata(&dest).is_ok() {
+                    eprintln!("   keeping existing: {}", dest);
+                    continue;
+                }
+                // The copy's result used to be discarded while "installed
+                // loop" printed regardless, so a failed copy — including the
+                // guaranteed EISDIR from a nested template directory — was
+                // reported as a success.
+                match install_template(&entry.path(), &dest) {
+                    Ok(true) => eprintln!("   installed loop: {}", dest),
+                    Ok(false) => {}
+                    Err(e) => {
+                        eprintln!("   FAILED loop {}: {}", dest, e);
+                        failures += 1;
+                    }
+                }
             }
+        }
+        Err(e) => {
+            eprintln!("   FAILED to read {}: {}", templates_loops, e);
+            failures += 1;
         }
     }
     let task_template = format!("{}/templates/tasks/lac-tasks.yaml", root);
     let task_dest = format!("{}/todo/lac-tasks.yaml", home);
+    if let Some(parent) = Path::new(&task_dest).parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            eprintln!("   FAILED {}: {}", parent.display(), e);
+            failures += 1;
+        }
+    }
     if fs::metadata(&task_dest).is_err() && Path::new(&task_template).exists() {
-        let _ = fs::copy(&task_template, &task_dest);
-        eprintln!("   installed task queue: {}", task_dest);
+        match install_template(Path::new(&task_template), &task_dest) {
+            Ok(true) => eprintln!("   installed task queue: {}", task_dest),
+            Ok(false) => eprintln!("   skipped non-file task template: {}", task_template),
+            Err(e) => {
+                eprintln!("   FAILED task queue: {}", e);
+                failures += 1;
+            }
+        }
     } else {
         eprintln!("   keeping existing task queue: {}", task_dest);
     }
 
     // 9. Shell env hooks (the docs always promised these).
     eprintln!("9. Ensuring shell env hooks...");
-    ensure_zprofile(&model_base);
+    if !ensure_zprofile(&model_base) {
+        failures += 1;
+    }
 
     // 10. Time Machine exclusion, verified.
     eprintln!("10. Applying Time Machine exclusions...");
@@ -233,9 +384,183 @@ fn main() {
         warns += 1;
     }
 
-    if warns == 0 {
+    if failures == 0 && warns == 0 {
         eprintln!("=== LAC bootstrap complete: all green ===");
-    } else {
+    } else if failures == 0 {
         eprintln!("=== LAC bootstrap complete with {} warning(s) (see above) ===", warns);
+    } else {
+        // Never "all green" with a failed step, and never exit 0: `make
+        // install` chains on this, and a zero would carry a half-configured
+        // machine forward as a configured one.
+        eprintln!(
+            "=== LAC bootstrap finished with {} failure(s) and {} warning(s) — see above ===",
+            failures, warns
+        );
+        std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_zprofile(tag: &str) -> String {
+        let path = std::env::temp_dir().join(format!(
+            "lac-test-zprofile-{}-{tag}",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        path.to_string_lossy().into_owned()
+    }
+
+    /// The bug this pins: the marker check was one-shot, so the first run
+    /// decided where HF_HOME pointed and no later run could change it —
+    /// including the run where /Volumes/AIModels finished mounting. Bootstrap
+    /// then wrote an internal-disk path into the shell while every other step
+    /// in the same run used the external volume.
+    #[test]
+    fn zprofile_block_is_reconciled_when_the_model_library_moves() {
+        let zp = temp_zprofile("reconcile");
+
+        // First run: no block at all.
+        assert_eq!(
+            ensure_zprofile_in(&zp, "/Volumes/AIModels"),
+            ZprofileOutcome::Installed
+        );
+        let after_first = fs::read_to_string(&zp).expect("read");
+        assert!(after_first.contains("HF_HOME=\"/Volumes/AIModels/hf\""), "{after_first}");
+
+        // Second run, same target: nothing to do. Idempotence is the whole
+        // point of a marker, and it has to survive the reconcile path.
+        assert_eq!(
+            ensure_zprofile_in(&zp, "/Volumes/AIModels"),
+            ZprofileOutcome::Unchanged
+        );
+        assert_eq!(fs::read_to_string(&zp).expect("read"), after_first);
+
+        // The volume was not mounted on the first run. Now it is. The block
+        // is present but records the wrong library, so this is a reconcile —
+        // which is exactly the transition the one-shot marker skipped.
+        assert_eq!(
+            ensure_zprofile_in(&zp, "/home/u/.lac/models"),
+            ZprofileOutcome::Reconciled
+        );
+        let internal = fs::read_to_string(&zp).expect("read");
+        assert!(internal.contains("HF_HOME=\"/home/u/.lac/models/hf\""), "{internal}");
+
+        // ...and the reverse transition, which is worse: an HF_HOME pointing
+        // into a volume that is no longer mounted.
+        assert_eq!(
+            ensure_zprofile_in(&zp, "/Volumes/AIModels"),
+            ZprofileOutcome::Reconciled
+        );
+        let back = fs::read_to_string(&zp).expect("read");
+        assert!(back.contains("HF_HOME=\"/Volumes/AIModels/hf\""), "{back}");
+        assert!(!back.contains("/home/u/.lac/models"), "stale path survived: {back}");
+        // Exactly one managed block, never a second appended copy.
+        assert_eq!(back.matches(ZPROFILE_MARKER).count(), 1, "{back}");
+        assert_eq!(back.matches(ZPROFILE_END).count(), 1, "{back}");
+
+        let _ = fs::remove_file(&zp);
+    }
+
+    #[test]
+    fn zprofile_reconcile_leaves_the_users_own_lines_alone() {
+        let zp = temp_zprofile("preserve");
+        fs::write(
+            &zp,
+            "# my shell\nexport EDITOR=vim\nalias ll='ls -l'\n",
+        )
+        .expect("seed");
+
+        assert_eq!(
+            ensure_zprofile_in(&zp, "/Volumes/AIModels"),
+            ZprofileOutcome::Installed
+        );
+        let after = fs::read_to_string(&zp).expect("read");
+        for line in ["# my shell", "export EDITOR=vim", "alias ll='ls -l'"] {
+            assert!(after.contains(line), "dropped {line}: {after}");
+        }
+
+        // Now change the target. Only the managed region may change.
+        assert_eq!(
+            ensure_zprofile_in(&zp, "/home/u/.lac/models"),
+            ZprofileOutcome::Reconciled
+        );
+        let after = fs::read_to_string(&zp).expect("read");
+        for line in ["# my shell", "export EDITOR=vim", "alias ll='ls -l'"] {
+            assert!(after.contains(line), "reconcile dropped {line}: {after}");
+        }
+        assert!(after.contains("HF_HOME=\"/home/u/.lac/models/hf\""), "{after}");
+        assert!(!after.contains("/Volumes/AIModels"), "stale path survived: {after}");
+
+        // A file with no trailing newline still gets a valid block.
+        let zp2 = temp_zprofile("nonewline");
+        fs::write(&zp2, "export FOO=1").expect("seed");
+        assert_eq!(
+            ensure_zprofile_in(&zp2, "/Volumes/AIModels"),
+            ZprofileOutcome::Installed
+        );
+        let after = fs::read_to_string(&zp2).expect("read");
+        assert!(after.starts_with("export FOO=1\n"), "{after}");
+        assert!(after.contains(ZPROFILE_MARKER), "{after}");
+
+        // An orphaned start marker is left visible rather than swallowed.
+        let zp3 = temp_zprofile("orphan");
+        fs::write(&zp3, format!("prelude\n{ZPROFILE_MARKER}\nhand-edited junk\n")).expect("seed");
+        assert_eq!(
+            ensure_zprofile_in(&zp3, "/Volumes/AIModels"),
+            ZprofileOutcome::Installed
+        );
+        let after = fs::read_to_string(&zp3).expect("read");
+        assert!(after.contains("hand-edited junk"), "orphan was consumed: {after}");
+        assert!(after.contains("HF_HOME=\"/Volumes/AIModels/hf\""), "{after}");
+
+        for path in [zp, zp2, zp3] {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn a_failed_zprofile_write_is_reported_not_assumed() {
+        // A directory where the file should be: every write fails, and this
+        // is the case that used to print a warning and then let the run
+        // continue to "all green".
+        let dir = std::env::temp_dir().join(format!("lac-test-zpdir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("mkdir");
+        let blocked = dir.join(".zprofile");
+        fs::create_dir_all(&blocked).expect("mkdir over the file path");
+
+        match ensure_zprofile_in(&blocked.to_string_lossy(), "/Volumes/AIModels") {
+            ZprofileOutcome::Failed(_) => {}
+            other => panic!("expected Failed, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn template_install_reports_what_actually_happened() {
+        let base = std::env::temp_dir().join(format!("lac-test-tmpl-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("nested")).expect("mkdir");
+        let file = base.join("loop.yaml");
+        fs::write(&file, "id: x\n").expect("write");
+        let dest = base.join("out.yaml");
+        let dest = dest.to_string_lossy().into_owned();
+
+        // A real file is copied and says so.
+        assert_eq!(install_template(&file, &dest), Ok(true));
+        assert_eq!(fs::read_to_string(&dest).expect("read"), "id: x\n");
+
+        // A directory is skipped, not attempted. `fs::copy` on a directory
+        // always fails with EISDIR, and the old loop printed "installed loop"
+        // for it anyway.
+        assert_eq!(install_template(&base.join("nested"), &dest), Ok(false));
+        // A missing source is an error the caller can count.
+        assert!(install_template(&base.join("absent"), &dest).is_err());
+
+        let _ = fs::remove_dir_all(&base);
     }
 }

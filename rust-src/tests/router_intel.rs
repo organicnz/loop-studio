@@ -171,14 +171,14 @@ fn raw_request(port: u16, text: &str) -> String {
 }
 
 fn get(port: u16, path: &str) -> (u16, String) {
-    let resp = raw_request(port, &format!("GET {} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", path));
+    let resp = raw_request(port, &format!("GET {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", path));
     split_response(&resp)
 }
 
 fn post_chat(port: u16, model: &str) -> (u16, String) {
     let body = format!("{{\"model\":\"{}\",\"messages\":[{{\"role\":\"user\",\"content\":\"hi\"}}]}}", model);
     let req = format!(
-        "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
         body
     );
@@ -196,7 +196,7 @@ fn post_chat_split_body(port: u16, model: &str) -> (u16, String) {
         .set_read_timeout(Some(Duration::from_secs(15)))
         .expect("gateway timeout");
     let request_head = format!(
-        "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream
@@ -235,7 +235,7 @@ fn wait_router(port: u16) {
             Duration::from_millis(300),
         ) {
             let _ = s.set_read_timeout(Some(Duration::from_millis(800)));
-            let _ = s.write_all(b"GET /lac/status HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+            let _ = s.write_all(b"GET /lac/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
             let mut buf = Vec::new();
             let _ = s.read_to_end(&mut buf);
             if String::from_utf8_lossy(&buf).contains("200 OK") {

@@ -117,14 +117,31 @@ fn json_u64(line: &str, key: &str) -> Option<u64> {
 /// Sum `est_tokens` from the router usage log (current + rotated window)
 /// for entries within the last `window_secs`. None when the router never
 /// logged (no gateway traffic yet) — distinct from a measured zero.
+///
+/// Both paths come from `common::usage_log_paths`, the same helper the router
+/// rotates with. This used to build its own names and got them wrong: it
+/// looked for `router-usage.1.jsonl` while the router wrote
+/// `router-usage.jsonl.1`, so the rotated generation was never read. The
+/// "current + rotated window" this documents was really just the current file,
+/// and the estimate fell to near zero at every 8MB rotation.
+///
+/// `lines` counts every line seen, in or out of the window, because its only
+/// job is to distinguish "the router has never logged" (None) from "the
+/// router logged and the window is genuinely empty" (Some(0)) — and that
+/// distinction is what stops a caller silently dropping to its scrape when a
+/// rotation briefly leaves the live file empty.
 fn router_est_tokens(window_secs: u64) -> Option<u64> {
-    let now = common::now_unix();
-    let home = common::home_dir();
+    let (live, rotated) = common::usage_log_paths();
+    sum_est_tokens(&[live, rotated], common::now_unix(), window_secs)
+}
+
+/// The windowing and summing, over whatever files it is handed, so the
+/// naming and the arithmetic can be tested apart from `$HOME` and the clock.
+fn sum_est_tokens(paths: &[String], now: u64, window_secs: u64) -> Option<u64> {
     let mut sum = 0u64;
     let mut lines = 0u64;
-    for suffix in ["", ".1"] {
-        let path = format!("{}/.lac/router-usage{}.jsonl", home, suffix);
-        let content = match fs::read_to_string(&path) {
+    for path in paths {
+        let content = match fs::read_to_string(path) {
             Ok(c) => c,
             Err(_) => continue,
         };
@@ -439,5 +456,77 @@ mod tests {
         assert_eq!(json_u64(r#"{"ts": 123 }"#, "\"ts\":"), Some(123));
         assert_eq!(json_u64(r#"{"nope":1}"#, "\"ts\":"), None);
         assert_eq!(json_u64(r#"{"ts":"abc"}"#, "\"ts\":"), None);
+    }
+
+    /// Write `lines` into a temp file and return its path.
+    fn usage_file(tag: &str, lines: &[String]) -> String {
+        let path = std::env::temp_dir().join(format!(
+            "lac-test-usage-{}-{}-{tag}.jsonl",
+            std::process::id(),
+            lines.len()
+        ));
+        fs::write(&path, format!("{}\n", lines.join("\n"))).expect("write usage log");
+        path.to_string_lossy().into_owned()
+    }
+
+    fn record(ts: u64, est: u64) -> String {
+        format!(r#"{{"ts":{ts},"rid":1,"est_tokens":{est},"outcome":"proxied"}}"#)
+    }
+
+    #[test]
+    fn usage_window_reads_the_rotated_generation() {
+        // The bug this pins: the router rotates to `router-usage.jsonl.1` and
+        // the reader used to ask for `router-usage.1.jsonl`, so the previous
+        // window was invisible and the estimate collapsed to whatever the new
+        // file happened to hold. Both names now come from one helper, and this
+        // asserts the two halves still agree on the *sum*, not just the
+        // spelling.
+        let now = 1_000_000u64;
+        let live = usage_file("live", &[record(now - 10, 100), record(now - 20, 200)]);
+        let rotated = usage_file("rotated", &[record(now - 30, 400), record(now - 40, 800)]);
+        let both = vec![live.clone(), rotated.clone()];
+        assert_eq!(sum_est_tokens(&both, now, 3600), Some(1500));
+
+        // Only the live file: what the broken reader would have reported.
+        assert_eq!(sum_est_tokens(std::slice::from_ref(&live), now, 3600), Some(300));
+        // Only the rotated file: what the broken reader would have missed
+        // entirely.
+        assert_eq!(sum_est_tokens(std::slice::from_ref(&rotated), now, 3600), Some(1200));
+
+        for path in both {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn usage_window_excludes_old_entries_but_still_counts_them() {
+        let now = 1_000_000u64;
+        // An entry from two hours ago, well outside a 1h window.
+        let path = usage_file("stale", &[record(now - 7200, 9999), record(now - 5, 42)]);
+        // Out of window, so it contributes nothing to the sum...
+        assert_eq!(sum_est_tokens(std::slice::from_ref(&path), now, 3600), Some(42));
+        // ...but it was still a logged line, so the answer is Some(0) rather
+        // than None. None means "the router never logged", and a caller that
+        // cannot tell that apart from a quiet hour silently drops to its
+        // scrape.
+        let quiet = usage_file("quiet", &[record(now - 7200, 9999)]);
+        assert_eq!(sum_est_tokens(std::slice::from_ref(&quiet), now, 3600), Some(0));
+        for path in [path, quiet] {
+            let _ = fs::remove_file(path);
+        }
+        // Nothing at all is None, which is the case that means "no data".
+        assert_eq!(sum_est_tokens(&["/nonexistent/lac-usage-xyz".to_string()], now, 3600), None);
+    }
+
+    #[test]
+    fn rotated_usage_log_keeps_the_name_the_router_writes() {
+        let (live, rotated) = common::usage_log_paths();
+        assert!(live.ends_with("/.lac/router-usage.jsonl"), "{live}");
+        // The ordinary rotated-log suffix, and the name already on disk.
+        assert_eq!(rotated, format!("{live}.1"), "{rotated}");
+        assert!(
+            !rotated.contains(".1.jsonl"),
+            "the reader used to ask for this name and never found it: {rotated}"
+        );
     }
 }
