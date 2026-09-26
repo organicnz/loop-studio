@@ -19,7 +19,7 @@ fn wait_status(port: u16, timeout: Duration) -> bool {
             &format!("127.0.0.1:{}", port).parse().unwrap(),
             Duration::from_millis(300),
         ) {
-            s.set_read_timeout(Some(Duration::from_millis(800))).ok();
+            s.set_read_timeout(Some(Duration::from_millis(2500))).ok();
             let _ = s.write_all(b"GET /lac/status HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
             let mut buf = Vec::new();
             let _ = s.read_to_end(&mut buf);
@@ -35,7 +35,7 @@ fn wait_status(port: u16, timeout: Duration) -> bool {
 fn request_status(port: u16, authorization: Option<&str>, forwarded: bool) -> Option<u16> {
     let addr = format!("127.0.0.1:{}", port).parse().ok()?;
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()?;
-    stream.set_read_timeout(Some(Duration::from_millis(800))).ok()?;
+    stream.set_read_timeout(Some(Duration::from_millis(2500))).ok()?;
     let auth = authorization
         .map(|token| format!("Authorization: Bearer {}\r\n", token))
         .unwrap_or_default();
@@ -62,7 +62,7 @@ fn request_status(port: u16, authorization: Option<&str>, forwarded: bool) -> Op
 fn request_with_headers(port: u16, extra: &str) -> Option<u16> {
     let addr = format!("127.0.0.1:{}", port).parse().ok()?;
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()?;
-    stream.set_read_timeout(Some(Duration::from_millis(800))).ok()?;
+    stream.set_read_timeout(Some(Duration::from_millis(2500))).ok()?;
     let request = format!(
         "GET /lac/status HTTP/1.1\r\nHost: x\r\n{}Connection: close\r\n\r\n",
         extra

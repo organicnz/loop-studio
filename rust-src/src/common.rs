@@ -514,7 +514,14 @@ pub fn append_jsonl(path: &str, line: &str) {
     }
     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(path) {
         use std::io::Write as _;
-        let _ = writeln!(f, "{}", line);
+        // One write syscall for the record and its newline. `writeln!` is
+        // two, and under O_APPEND with a thread per connection two writers
+        // can land their bodies adjacent before either newline, welding two
+        // JSON objects into one unparseable line.
+        let mut record = String::with_capacity(line.len() + 1);
+        record.push_str(line);
+        record.push('\n');
+        let _ = f.write_all(record.as_bytes());
     }
 }
 

@@ -345,55 +345,48 @@ fn find_headers_end(buf: &[u8]) -> Option<usize> {
         .map(|p| p + 4)
 }
 
-/// Read until end-of-headers (or limits). The old single 4 KiB read cut
-/// large auth/tool-call headers in half and poisoned the forwarded stream.
-fn read_headers(client: &TcpStream) -> io::Result<Vec<u8>> {
+/// Why the header block could not be read. Split out so the caller can
+/// answer with the right status: a client that legitimately sends more than
+/// 64 KiB of headers was not truncated, it was too large, and telling it
+/// "incomplete request" sends it looking for a network fault.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HeaderError {
+    Incomplete,
+    TooLarge,
+}
+
+fn read_headers(client: &TcpStream) -> Result<Vec<u8>, HeaderError> {
     // Owned handle: bytes consumed here are the client's already-sent
     // headers; the caller forwards them explicitly and streams the rest.
-    let mut stream = client.try_clone()?;
+    let mut stream = client.try_clone().map_err(|_| HeaderError::Incomplete)?;
     let deadline = Instant::now() + header_budget();
     let mut buf: Vec<u8> = Vec::with_capacity(8192);
     let mut chunk = [0u8; 8192];
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "incomplete request headers",
-            ));
+            return Err(HeaderError::Incomplete);
         }
-        stream.set_read_timeout(Some(remaining))?;
-        let n = stream.read(&mut chunk).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("incomplete request headers: {error}"),
-            )
-        })?;
+        if stream.set_read_timeout(Some(remaining)).is_err() {
+            return Err(HeaderError::Incomplete);
+        }
+        let n = stream.read(&mut chunk).map_err(|_| HeaderError::Incomplete)?;
         if n == 0 {
             break;
         }
         buf.extend_from_slice(&chunk[..n]);
         if let Some(end) = find_headers_end(&buf) {
             if end > MAX_HEADERS {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "request headers exceed 64 KiB",
-                ));
+                return Err(HeaderError::TooLarge);
             }
             break;
         }
         if buf.len() > MAX_HEADERS {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "request headers exceed 64 KiB",
-            ));
+            return Err(HeaderError::TooLarge);
         }
     }
     if find_headers_end(&buf).is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "incomplete request headers",
-        ));
+        return Err(HeaderError::Incomplete);
     }
     Ok(buf)
 }
@@ -669,8 +662,9 @@ enum BodyError {
 /// Charged against allocated capacity, not bytes consumed, so this number
 /// is the memory actually held. Per-connection fixed costs (the header
 /// buffer and one 16 KiB read buffer, well under 256 KiB) sit outside the
-/// budget, which is why the true worst case is this plus MAX_INFLIGHT of
-/// those.
+/// budget, which is why the request-side worst case is this plus
+/// MAX_INFLIGHT of those. A relayed response also buffers its own header
+/// block (up to 64 KiB, grown to ~128 KiB of capacity) outside this budget.
 const MAX_BUFFERED_BODY: usize = 256 * 1024 * 1024;
 
 /// Retryable "the router is full", distinct from the 503 raised when there
@@ -851,6 +845,10 @@ fn read_request_body(
         parse_content_length_strict(&initial[..header_len]).map_err(|_| BodyError::Invalid)?
     {
         let target = header_len.checked_add(content_len).ok_or(BodyError::Invalid)?;
+        // Defence in depth: handle_connection already rejects a declared
+        // length over MAX_BODY from these same bytes, so this cannot fire
+        // today. It stays so a future caller of read_request_body that skips
+        // that gate still cannot pull an unbounded body into memory.
         if target > header_len.saturating_add(MAX_BODY) {
             return Err(BodyError::TooLarge);
         }
@@ -881,6 +879,8 @@ fn read_request_body(
         });
     }
     if has_chunked_transfer_encoding(&initial[..header_len]).map_err(|_| BodyError::Invalid)? {
+        // Wire bytes, so this is MAX_BODY of payload plus chunk framing and
+        // trailers. Unreachable today for the same reason as the check above.
         let max_request = header_len.saturating_add(MAX_BODY + MAX_HEADERS);
         if request.len() > max_request {
             return Err(BodyError::TooLarge);
@@ -1734,7 +1734,11 @@ fn parse_resp_headers(head: &[u8]) -> Result<(Option<usize>, bool, bool, bool), 
         }
     }
     let plain_chunked = plain_chunked_transfer_encoding(head).map_err(|_| ())?;
-    let sse_keepalive = sse && content_encoding_identity && plain_chunked != Some(false);
+    // None = no transfer-coding at all, Some(true) = plain chunked: both are
+    // safe to inject into. Spelled as a positive match because
+    // `!= Some(false)` reads like the opposite of what it does.
+    let sse_keepalive =
+        sse && content_encoding_identity && matches!(plain_chunked, None | Some(true));
     let chunked = has_chunked_response_transfer_encoding(head).map_err(|_| ())?;
     if chunked && cl.is_some() {
         return Err(());
@@ -2367,7 +2371,12 @@ fn handle_connection(
 
     let initial = match read_headers(&client) {
         Ok(b) => b,
-        Err(_) => {
+        Err(HeaderError::TooLarge) => {
+            let mut c = client;
+            let _ = json_response(&mut c, "431 Request Header Fields Too Large", &format!("{{\"error\":{{\"message\":\"request headers exceed the {} KiB limit\",\"type\":\"lac_router_headers\",\"code\":431}}}}", MAX_HEADERS / 1024));
+            return;
+        }
+        Err(HeaderError::Incomplete) => {
             let mut c = client;
             let _ = json_response(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"incomplete request\"}}");
             return;
@@ -2561,6 +2570,9 @@ fn handle_connection(
     let header_len = find_headers_end(&initial).unwrap_or(initial.len());
     let t0 = Instant::now();
     let mut tried: Vec<u16> = Vec::new();
+    // Backends that answered but were unusable. Without this the 502 blames
+    // refused connections even when every backend replied 500 or malformed.
+    let mut answered: Vec<String> = Vec::new();
     for (bid, port) in candidates {
         match try_forward(&client, port, &initial, method == "HEAD") {
             Ok((up, down, ttfb)) => {
@@ -2597,11 +2609,29 @@ fn handle_connection(
             Err(ForwardError::Connect) => {
                 note_error(&stats, port);
                 tried.push(port);
+                // Log it too: a backend that is not listening is the most
+                // common outage there is, and the usage log is where an
+                // operator looks. Without this line a total-outage window
+                // leaves no trace there at all.
+                let up_body = initial.len().saturating_sub(header_len) as u64;
+                let est = up_body / 4;
+                log_usage(
+                    rid_n,
+                    backend_name(bid),
+                    port,
+                    &model,
+                    up_body,
+                    0,
+                    est,
+                    None,
+                    "unreachable",
+                );
                 continue;
             }
             Err(ForwardError::HttpStatus { status, ttfb }) => {
                 note_error(&stats, port);
                 tried.push(port);
+                answered.push(format!("{} http {}", backend_name(bid), status));
                 let up_body = initial.len().saturating_sub(header_len) as u64;
                 let est = up_body / 4;
                 log_usage(
@@ -2646,6 +2676,7 @@ fn handle_connection(
             Err(ForwardError::BadResponse { down, ttfb }) => {
                 note_error(&stats, port);
                 tried.push(port);
+                answered.push(format!("{} invalid-response", backend_name(bid)));
                 let up_body = initial.len().saturating_sub(header_len) as u64;
                 let est = (up_body + down) / 4;
                 log_usage(
@@ -2743,14 +2774,19 @@ fn handle_connection(
         }
     }
     let err_body = format!(
-        "{{\"error\":{{\"message\":\"All LAC backends refused the connection (preferred {}, tried {:?}). Start one with `lac serve mlx`.\",\"type\":\"lac_router_error\",\"code\":502}}}}",
+        "{{\"error\":{{\"message\":\"No LAC backend could serve this request (preferred {}; tried {:?}{}). Start one with `lac serve mlx`.\",\"type\":\"lac_router_error\",\"code\":502}}}}",
         common::json_escape(backend_name(pref)),
-        tried
+        tried,
+        if answered.is_empty() {
+            String::new()
+        } else {
+            format!("; answered: {}", common::json_escape(&answered.join(", ")))
+        }
     );
     let mut c = client;
     let _ = json_response(&mut c, "502 Bad Gateway", &err_body);
     eprintln!(
-        "[lac-router rid={}] {} {} -> 502 all-refused ({:.1}s)",
+        "[lac-router rid={}] {} {} -> 502 no-backend-served ({:.1}s)",
         rid_n,
         method,
         path,

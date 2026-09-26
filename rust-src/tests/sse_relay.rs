@@ -648,8 +648,18 @@ fn relay_framing_regressions() {
     let _ = std::fs::create_dir_all(&tmp_home);
     let llama_port = spawn_backend();
     let healthy_port = spawn_healthy_backend();
-    let dead_listener = TcpListener::bind(("127.0.0.1", 0)).expect("dead backend reservation");
-    let dead_port = dead_listener.local_addr().expect("dead backend address").port();
+    // A "dead" backend must refuse connections *instantly*. Holding a bound
+    // listener open does the opposite: connect() succeeds against the kernel
+    // backlog and the health probe then burns its whole read timeout. Several
+    // timing assertions here have only ~0.5s of headroom, and the health
+    // cache's negative TTL expires every 2.5s, so a stale entry reintroduced
+    // that tax mid-test. Reserve a port, then release it so connect gets an
+    // immediate ECONNREFUSED. The router's own port is asserted distinct
+    // below, since a released port is briefly reusable.
+    let dead_port = {
+        let reservation = TcpListener::bind(("127.0.0.1", 0)).expect("dead backend reservation");
+        reservation.local_addr().expect("dead backend address").port()
+    };
     let router_bin = env!("CARGO_BIN_EXE_lac-router");
     let home_env = tmp_home.to_string_lossy().into_owned();
     let llama_env = llama_port.to_string();
@@ -668,6 +678,13 @@ fn relay_framing_regressions() {
         ],
     );
     let router_port = router.port;
+    // The router binds an ephemeral port; if it landed on the port we just
+    // released, the "dead" backend would be the router itself and quietly
+    // answer every health probe.
+    assert_ne!(
+        router_port, dead_port,
+        "router took the released dead-backend port"
+    );
     wait_router(router_port);
 
     // 1. Chunked SSE: byte-identical AND incremental.
@@ -928,7 +945,7 @@ fn relay_framing_regressions() {
     let mut oversized_headers = b"GET /v1/models HTTP/1.1\r\nHost: x\r\nX-Pad: ".to_vec();
     oversized_headers.extend(std::iter::repeat_n(b'a', 70_000));
     oversized_headers.extend_from_slice(b"\r\n\r\n");
-    assert!(probe_raw(router_port, &oversized_headers).starts_with(b"HTTP/1.1 400"));
+    assert!(probe_raw(router_port, &oversized_headers).starts_with(b"HTTP/1.1 431"));
 
     // Both framing headers at once is rejected, not silently resolved.
     let ambiguous = b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nhi";
