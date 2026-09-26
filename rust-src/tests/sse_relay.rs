@@ -394,7 +394,7 @@ fn spawn_backend() -> u16 {
 fn probe(router_port: u16, scenario: &str) -> (Vec<u8>, Vec<(f64, usize)>, f64) {
     let body = format!("{{\"model\":\"qwen3.8-27b\",\"scenario\":\"{}\"}}", scenario);
     let req = format!(
-        "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(), body
     );
     let mut s = TcpStream::connect_timeout(&format!("127.0.0.1:{}", router_port).parse().unwrap(), Duration::from_secs(5)).unwrap();
@@ -499,7 +499,7 @@ fn probe_timed(router_port: u16, request: &[u8]) -> (Vec<u8>, f64) {
 fn probe_expect_continue(router_port: u16) -> Vec<u8> {
     let body = r#"{"model":"qwen3.8-27b"}"#;
     let head = format!(
-        "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nExpect: 100-continue\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nExpect: 100-continue\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let mut stream = TcpStream::connect_timeout(
@@ -532,7 +532,7 @@ fn probe_expect_continue(router_port: u16) -> Vec<u8> {
 /// everything else first: it can then answer 413 on a clean socket instead
 /// of a reset that would swallow the response.
 fn probe_paced_oversized_chunked(router_port: u16) -> Vec<u8> {
-    let head = b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+    let head = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
     // MAX_BODY (16 MiB) + MAX_HEADERS: the router buffers the request up to
     // header_len + this, and rejects on the first byte beyond it.
     let ceiling = 16 * 1024 * 1024 + 65_536;
@@ -571,7 +571,7 @@ fn probe_chunked_reset(router_port: u16) -> (Vec<u8>, f64) {
     body.push_str(&"a".repeat(16 * 1024));
     body.push_str("\"}");
     let request = format!(
-        "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:X}\r\n{}\r\n0\r\n\r\n",
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:X}\r\n{}\r\n0\r\n\r\n",
         body.len(),
         body
     );
@@ -622,7 +622,7 @@ fn count_faults(path: &str) -> usize {
 /// no unread bytes are queued and the 503 cannot be lost to a reset.
 fn probe_declared_over_budget(router_port: u16, budget: usize) -> Vec<u8> {
     let head = format!(
-        "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         budget + 1
     );
     let mut stream = TcpStream::connect_timeout(
@@ -667,7 +667,7 @@ fn wait_router(port: u16) {
     while start.elapsed() < Duration::from_secs(15) {
         if let Ok(mut s) = TcpStream::connect_timeout(&format!("127.0.0.1:{}", port).parse().unwrap(), Duration::from_millis(300)) {
             s.set_read_timeout(Some(Duration::from_millis(800))).ok();
-            let _ = s.write_all(b"GET /lac/status HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+            let _ = s.write_all(b"GET /lac/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
             let mut buf = Vec::new();
             let _ = s.read_to_end(&mut buf);
             if String::from_utf8_lossy(&buf).contains("200 OK") {
@@ -872,38 +872,38 @@ fn relay_framing_regressions() {
     assert!(!partial_size_text.contains("E\r\n: keep-alive"));
     assert!(partial_size_total < 4.0);
 
-    let unsupported_request = b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nTransfer-Encoding: gzip\r\nConnection: close\r\n\r\nhi";
+    let unsupported_request = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nTransfer-Encoding: gzip\r\nConnection: close\r\n\r\nhi";
     assert!(probe_raw(router_port, unsupported_request).starts_with(b"HTTP/1.1 400"));
 
     let malformed_early = b"GET /lac/status HTTP/1.1\r\nX-Bad: bad\x0bvalue\r\n\r\n";
     assert!(probe_raw(router_port, malformed_early).starts_with(b"HTTP/1.1 400"));
 
-    let withheld_status = b"GET /lac/status HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\nConnection: close\r\n\r\n";
+    let withheld_status = b"GET /lac/status HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\nConnection: close\r\n\r\n";
     assert!(probe_header_only(router_port, withheld_status).starts_with(b"HTTP/1.1 200"));
-    let withheld_options = b"OPTIONS /v1/chat HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\n";
+    let withheld_options = b"OPTIONS /v1/chat HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\n\r\n";
     assert!(probe_header_only(router_port, withheld_options).starts_with(b"HTTP/1.1 204"));
-    let withheld_models = b"GET /v1/models HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\nConnection: close\r\n\r\n";
+    let withheld_models = b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\nConnection: close\r\n\r\n";
     assert!(probe_header_only(router_port, withheld_models).starts_with(b"HTTP/1.1 200"));
 
-    let bodyless_post = b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+    let bodyless_post = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
     assert!(probe_raw(router_port, bodyless_post).starts_with(b"HTTP/1.1 400"));
 
-    let oversized = b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: 16777217\r\nConnection: close\r\n\r\n";
+    let oversized = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 16777217\r\nConnection: close\r\n\r\n";
     assert!(probe_raw(router_port, oversized).starts_with(b"HTTP/1.1 413"));
 
     // A body beyond the router's total buffer allowance is still a
     // per-request 413, not a "busy" 503: this request is too big, and
     // retrying it will not help.
-    let oversized_beyond_budget = b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: 1073741824\r\nConnection: close\r\n\r\n";
+    let oversized_beyond_budget = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1073741824\r\nConnection: close\r\n\r\n";
     assert!(
         probe_raw(router_port, oversized_beyond_budget).starts_with(b"HTTP/1.1 413"),
         "over the per-request limit is 413 even when it also exceeds the buffer budget"
     );
 
-    let unframed_body = b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n{\"unframed\":true}";
+    let unframed_body = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n{\"unframed\":true}";
     let unframed_response = probe_raw(router_port, unframed_body);
     assert!(String::from_utf8_lossy(&unframed_response).contains("requires Content-Length"));
-    let delayed_unframed_headers = b"PUT /v1/chat/completions HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+    let delayed_unframed_headers = b"PUT /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
     let delayed_unframed_body = b"{\"delayed\":true}";
     let delayed_unframed = probe_raw_parts(
         router_port,
@@ -912,17 +912,17 @@ fn relay_framing_regressions() {
     );
     assert!(String::from_utf8_lossy(&delayed_unframed).starts_with("HTTP/1.1 400"));
 
-    let pipeline = b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\nGET /v1/models HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+    let pipeline = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\nGET /v1/models HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
     assert!(probe_raw(router_port, pipeline).starts_with(b"HTTP/1.1 400"));
 
-    let split_headers = b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nConnection: close\r\n\r\n";
-    let split_tail = b"hiGET /v1/models HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+    let split_headers = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nConnection: close\r\n\r\n";
+    let split_tail = b"hiGET /v1/models HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
     assert!(probe_raw_parts(router_port, split_headers, split_tail).starts_with(b"HTTP/1.1 400"));
 
-    let chunk_pipeline = b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n2\r\nhi\r\n0\r\n\r\nGET /v1/models HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer second-secret\r\nConnection: close\r\n\r\n";
+    let chunk_pipeline = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n2\r\nhi\r\n0\r\n\r\nGET /v1/models HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer second-secret\r\nConnection: close\r\n\r\n";
     assert!(probe_raw(router_port, chunk_pipeline).starts_with(b"HTTP/1.1 400"));
 
-    let split_chunked_headers = b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+    let split_chunked_headers = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
     let split_chunked_body = b"5\r\nhello\r\n0\r\n\r\n";
     assert!(probe_raw_parts(
         router_port,
@@ -940,7 +940,7 @@ fn relay_framing_regressions() {
     )
     .starts_with(b"HTTP/1.1 200"));
 
-    let malformed_chunked = b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nzz\r\nhi\r\n";
+    let malformed_chunked = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nzz\r\nhi\r\n";
     assert!(probe_raw(router_port, malformed_chunked).starts_with(b"HTTP/1.1 400"));
 
     let (short_cl, _, _) = probe(router_port, "short-cl");
@@ -977,17 +977,17 @@ fn relay_framing_regressions() {
     );
 
     // Strict request-line/header grammar: bare LF, obs-fold, oversized.
-    let bare_lf = b"GET /v1/models HTTP/1.1\r\nHost: x\nX-Extra: y\r\n\r\n";
+    let bare_lf = b"GET /v1/models HTTP/1.1\r\nHost: localhost\nX-Extra: y\r\n\r\n";
     assert!(probe_raw(router_port, bare_lf).starts_with(b"HTTP/1.1 400"));
-    let obs_fold = b"GET /v1/models HTTP/1.1\r\nHost: x\r\nX-Trace:\r\n continued\r\nConnection: close\r\n\r\n";
+    let obs_fold = b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\nX-Trace:\r\n continued\r\nConnection: close\r\n\r\n";
     assert!(probe_raw(router_port, obs_fold).starts_with(b"HTTP/1.1 400"));
-    let mut oversized_headers = b"GET /v1/models HTTP/1.1\r\nHost: x\r\nX-Pad: ".to_vec();
+    let mut oversized_headers = b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\nX-Pad: ".to_vec();
     oversized_headers.extend(std::iter::repeat_n(b'a', 70_000));
     oversized_headers.extend_from_slice(b"\r\n\r\n");
     assert!(probe_raw(router_port, &oversized_headers).starts_with(b"HTTP/1.1 431"));
 
     // Both framing headers at once is rejected, not silently resolved.
-    let ambiguous = b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nhi";
+    let ambiguous = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nhi";
     assert!(String::from_utf8_lossy(&probe_raw(router_port, ambiguous))
         .contains("ambiguous request framing"));
 
@@ -1002,7 +1002,7 @@ fn relay_framing_regressions() {
     // HEAD: headers (with Content-Length) and no body, without waiting for
     // a payload the backend only sends after its delay.
     let (head_response, head_total) =
-        probe_timed(router_port, b"HEAD /v1/models HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+        probe_timed(router_port, b"HEAD /v1/models HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     assert!(head_response.starts_with(b"HTTP/1.1 200"));
     let head_end = head_response
         .windows(4)
@@ -1033,7 +1033,7 @@ fn relay_framing_regressions() {
 
     let gone_body = r#"{"model":"qwen3.8-27b","scenario":"client-gone"}"#;
     let gone_request = format!(
-        "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         gone_body.len(),
         gone_body
     );
@@ -1091,7 +1091,7 @@ fn relay_framing_regressions() {
 
     let (slow_headers, slow_headers_total) = probe_timed(
         budget_port,
-        b"GET /v1/models HTTP/1.1\r\nHost: x\r\n",
+        b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\n",
     );
     assert!(
         String::from_utf8_lossy(&slow_headers).starts_with("HTTP/1.1 400"),
@@ -1104,7 +1104,7 @@ fn relay_framing_regressions() {
     );
 
     let body = b"{\"partial\":true}";
-    let mut stalled_body = b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\nConnection: close\r\n\r\n".to_vec();
+    let mut stalled_body = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\nConnection: close\r\n\r\n".to_vec();
     stalled_body.extend_from_slice(body);
     let (stalled, stalled_total) = probe_timed(budget_port, &stalled_body);
     assert!(
@@ -1141,7 +1141,7 @@ fn relay_framing_regressions() {
         );
         body.push_str("\"}");
         let request = format!(
-            "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
             body
         );

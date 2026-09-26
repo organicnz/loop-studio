@@ -94,13 +94,38 @@ There is no external Hermes process. `lac hermes` and `lac worker` are entry poi
 tailnet (WireGuard-encrypted), never the public internet. No `:8000` ingress
 rule on Oracle/VPS firewalls.
 
-- Router: `LAC_BIND_ADDR` (default `127.0.0.1`; non-loopback binds are refused
-  unless explicitly acknowledged) + `LAC_API_TOKEN`. Non-loopback bind without a token refuses to start
-  (fail closed). When a token is configured it is required on every listener,
+- Router: `LAC_BIND_ADDR` (default `127.0.0.1`) + `LAC_API_TOKEN`. A
+  non-loopback bind without a token refuses to start (fail closed, in one
+  check). When a token is configured it is required on every listener,
   including loopback, so a local reverse proxy cannot bypass the gate;
   forwarded proxy headers also require it. Requests without a valid
-  `Authorization: Bearer` get 401 and are never forwarded. Token comparison is
-  constant-time. See `lac config` (redacted) and `lac doctor` (`remote_auth` check).
+  `Authorization: Bearer` get 401 and are never forwarded. Token comparison
+  is constant-time *and* length-safe, so a wrong-length guess costs the same
+  as a right-length one. See `lac config` (redacted) and `lac doctor`
+  (`remote_auth` check).
+- Browser gates: a loopback gateway is reachable by every web page the user
+  has open, so it refuses browser traffic by default rather than inheriting
+  the web's attacker model.
+  - `Host` is served only for IP literals and `localhost`; any other DNS name
+    gets **421 Misdirected Request**. This is the DNS-rebinding control: an
+    attacker who rebinds their domain to `127.0.0.1` gets a request the
+    browser considers *same-origin*, so no `Origin` is sent and CORS never
+    applies — only `Host` still carries their name. A valid Bearer token is
+    the one exception, and it is proof rather than heuristic (a rebound
+    request is same-origin to a page that has never seen the token), which is
+    what keeps MagicDNS working on a token-protected gateway. Add names
+    explicitly with `LAC_ALLOWED_HOSTS`.
+  - `Origin` must be on `LAC_ALLOWED_ORIGINS` or the request gets **403
+    Forbidden**; an allow-listed origin is echoed back exactly (never a
+    wildcard the router picked) with `Vary: Origin`. A native client sends no
+    `Origin` at all and therefore gets no CORS header on any response, so
+    Studio, OpenCode, curl and the local SDKs are unaffected. `*` in
+    `LAC_ALLOWED_ORIGINS` re-opens every page and is called out in the startup
+    banner.
+  - Both gates run before the auth gate, so a refused request never reaches a
+    status read, `/lac/switch`, or an inference backend. Regression coverage:
+    `router_auth` (`browser_origins_and_rebound_hosts_are_refused`,
+    `operator_allowlists_and_a_token_reopen_exactly_what_they_name`).
 - Studio: `LACConnectionStore` (`SwiftUI/.../LACConnection.swift`) — host
   (MagicDNS `mac.tailXXX.ts.net`), port, TLS toggle (required for remote
   profiles; use `tailscale serve --https`), Bearer token in Keychain
