@@ -48,3 +48,6 @@ models/
 .swiftpm/
 /SwiftUI/.build/
 /SwiftUI/.swiftpm/
+
+# Git worktrees (full nested checkouts, never committed)
+/.worktrees/
