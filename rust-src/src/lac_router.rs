@@ -297,11 +297,11 @@ fn sniff_model(buf: &[u8]) -> Option<String> {
 }
 
 fn usage_log_path() -> String {
-    format!("{}/.lac/router-usage.jsonl", common::home_dir())
+    common::usage_log_paths().0
 }
 
 /// One JSONL line per proxied request. Rotated past 8MB (previous window
-/// kept as `.1`) so the log can never fill a disk by itself.
+/// kept beside it as `.1`) so the log can never fill a disk by itself.
 #[allow(clippy::too_many_arguments)]
 fn log_usage(
     rid: usize,
@@ -314,12 +314,16 @@ fn log_usage(
     ttfb_ms: Option<f64>,
     outcome: &str,
 ) {
-    let path = usage_log_path();
+    let (path, rotated) = common::usage_log_paths();
     if std::fs::metadata(&path)
         .map(|m| m.len() > USAGE_ROTATE_BYTES)
         .unwrap_or(false)
     {
-        let _ = std::fs::rename(&path, format!("{}.1", path));
+        // The rotated name comes from the same helper `kv-manage` reads, so
+        // the generation this moves is one the reader will actually find.
+        // The rename replaces any earlier `.1`, which is the intent: exactly
+        // one previous generation is kept.
+        let _ = std::fs::rename(&path, rotated);
     }
     let line = format!(
         "{{\"ts\":{},\"rid\":{},\"backend\":\"{}\",\"port\":{},\"model\":\"{}\",\"req_body\":{},\"resp_body\":{},\"est_tokens\":{},\"ttfb_ms\":{},\"outcome\":\"{}\"}}",

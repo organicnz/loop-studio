@@ -122,6 +122,9 @@ fn spawn_server(
         .status()
 }
 
+/// Set by the readiness prober the first time the engine answers HTTP.
+static EVER_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn daemon_retry_loop(
     model: String,
     port: u16,
@@ -129,29 +132,54 @@ fn daemon_retry_loop(
     batch: i32,
     ubatch: i32,
     parallel: i32,
-) {
-    let mut attempt: u32 = 0;
+) -> std::io::Error {
+    use std::sync::atomic::Ordering;
+    let mut crashes: u32 = 0;
     loop {
         eprintln!(
             "llama-server launch (attempt {}, model {} on port {})",
-            attempt + 1,
+            crashes + 1,
             model,
             port
         );
-        match spawn_server(&model, port, context, batch, ubatch, parallel) {
-            Ok(s) if s.success() => {
-                eprintln!("llama-server exited cleanly; daemon stopping.");
-                return;
-            }
-            Ok(s) => {
-                eprintln!("llama-server crashed ({}); backing off...", s);
+        let (outcome, clean) = match spawn_server(&model, port, context, batch, ubatch, parallel) {
+            Ok(status) => {
+                let clean = status.success();
+                if clean {
+                    eprintln!("llama-server exited cleanly");
+                } else {
+                    eprintln!("llama-server crashed ({status}); backing off...");
+                }
+                (format!("{status}"), clean)
             }
             Err(e) => {
-                eprintln!("Failed to launch llama-server: {} (retrying)", e);
+                eprintln!("Failed to launch llama-server: {e} (retrying)");
+                (e.to_string(), false)
             }
+        };
+        if clean {
+            // A clean exit is the engine choosing to stop, not this process
+            // succeeding: no lane is serving. Exiting 0 is exactly what
+            // `KeepAlive{SuccessfulExit: false}` reads as "do not restart", so
+            // the night would end silently. Report the failure instead.
+            return std::io::Error::other(format!(
+                "llama-server exited successfully without staying up ({outcome}); \
+                 treating as a failure so the supervisor restarts it"
+            ));
         }
-        let wait = backoff_ms(attempt);
-        attempt = attempt.saturating_add(1);
+        crashes = crashes.saturating_add(1);
+        if common::daemon_decision(EVER_READY.load(Ordering::SeqCst), crashes)
+            == common::DaemonDecision::Stop
+        {
+            return std::io::Error::other(common::daemon_give_up_reason(
+                "llama-server",
+                &model,
+                port,
+                crashes,
+                &outcome,
+            ));
+        }
+        let wait = backoff_ms(crashes - 1);
         std::thread::sleep(Duration::from_millis(wait));
     }
 }
@@ -185,7 +213,11 @@ fn main() {
     let port = server_port();
     eprintln!("llama-server with model: {}", model);
     eprintln!("Context window: {} tokens (thermal={})", context, thermal);
-    eprintln!("Listening on 127.0.0.1:{}", port);
+    // Not "Listening on": nothing is bound yet, and this line used to be
+    // printed before the port was even known to be free, so a failed launch
+    // ended with a confident claim of a listener that did not exist. The
+    // prober below reports READY when it is true.
+    eprintln!("starting on 127.0.0.1:{} (readiness confirmed below)", port);
 
     let total_gib = common::total_ram_gib().unwrap_or(16.0);
     let cpus = std::thread::available_parallelism()
@@ -200,9 +232,29 @@ fn main() {
         batch, ubatch, parallel, total_gib, cpus
     );
 
+    // A port already in use is not this process's success. It used to exit 0
+    // here, which is the one outcome `KeepAlive{SuccessfulExit: false}` treats
+    // as "do not restart" — so under launchd the job went unloaded and stayed
+    // unloaded, and the last line in the log was a confident "Listening on
+    // 127.0.0.1:8081" for a listener this process never owned.
+    //
+    // Interactive: refuse, nonzero, so `lac serve llama` is honest.
+    // Supervised: do not give up. The holder may be a stale process, and the
+    // retry loop is how this lane takes over when it goes away. If the holder
+    // is healthy and stays, the loop stops itself after GIVE_UP_AFTER with a
+    // message that says exactly that.
     if port_in_use(port) {
-        eprintln!("port {} already bound — another llama-server is up; exiting; route to it via /v1/models.", port);
-        std::process::exit(0);
+        if !should_daemon() {
+            eprintln!(
+                "port {port} is already bound by another process; not starting a second \
+                 llama-server. Route to the existing one, or free the port."
+            );
+            std::process::exit(1);
+        }
+        eprintln!(
+            "port {port} is already bound; supervising anyway and will take it over if that \
+             process exits"
+        );
     }
 
     // Readiness prober: the router's health gate needs /v1/models == 200,
@@ -210,9 +262,13 @@ fn main() {
     std::thread::spawn(move || {
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if common::wait_for_http(port, Duration::from_secs(300)) {
+                EVER_READY.store(true, std::sync::atomic::Ordering::SeqCst);
                 eprintln!("serve-llama READY on :{} (model loaded)", port);
             } else {
-                eprintln!("serve-llama: model not ready after 300s — check logs");
+                eprintln!(
+                    "serve-llama: no HTTP on :{port} after 300s — the model is still loading, or \
+                     the engine failed. The supervisor will retry if it exits."
+                );
             }
         }));
         if let Err(e) = res {
@@ -220,14 +276,28 @@ fn main() {
         }
     });
 
-    if should_daemon() {
-        daemon_retry_loop(model, port, context, batch, ubatch, parallel);
+    // Both paths used to fall through to a return, so the process exited 0
+    // after a crash, a bind failure, or a missing binary.
+    let failure = if should_daemon() {
+        daemon_retry_loop(model, port, context, batch, ubatch, parallel)
     } else {
         match spawn_server(&model, port, context, batch, ubatch, parallel) {
-            Ok(s) => eprintln!("server exited: {}", s),
-            Err(e) => eprintln!("Failed to start llama-server: {}", e),
+            Ok(status) if status.success() => {
+                eprintln!("server exited: {status}");
+                std::io::Error::other("llama-server exited without staying up")
+            }
+            Ok(status) => {
+                eprintln!("server exited: {status}");
+                std::io::Error::other(format!("llama-server exited with {status}"))
+            }
+            Err(e) => {
+                eprintln!("Failed to start llama-server: {e}");
+                e
+            }
         }
-    }
+    };
+    eprintln!("serve-llama: {failure}");
+    std::process::exit(1);
 }
 
 #[cfg(test)]

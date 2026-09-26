@@ -653,7 +653,7 @@ fn stat_field(status: &str, backend: &str, field: &str) -> Option<u64> {
 /// POST a fixed body through the router and return the raw response.
 fn probe_raw_with_body(router_port: u16, body: &str) -> (Vec<u8>, Vec<(f64, usize)>, f64) {
     let request = format!(
-        "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
         body
     );
@@ -1213,7 +1213,7 @@ fn relay_framing_regressions() {
     let status_of = |port: u16| {
         String::from_utf8_lossy(&probe_raw(
             port,
-            b"GET /lac/status HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+            b"GET /lac/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
         ))
         .to_string()
     };
