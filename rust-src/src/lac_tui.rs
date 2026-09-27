@@ -54,26 +54,21 @@ fn bin(root: &str, name: &str) -> String {
 
 fn status_header(root: &str) -> String {
     let gw = if port_up(common::gateway_port()) { "UP  " } else { "DOWN" };
-    let o = if port_up(11434) { "UP  " } else { "DOWN" };
     let mlx = if port_up(common::mlx_port()) { "UP  " } else { "DOWN" };
-    let llama = if port_up(8081) { "UP  " } else { "DOWN" };
     let ram = free_ram_gib()
         .map(|f| format!("{:.1}GiB", f))
         .unwrap_or_else(|| "?".to_string());
+    // The ports probed are the ports printed (ollama and llama honor
+    // LAC_OLLAMA_PORT / LAC_LLAMA_PORT; these two literals did not), and the
+    // model id comes from the shared parser: the hand-rolled quote scan this
+    // replaces indexed one byte past the end of a file truncated right after
+    // `"model"`, and sliced a character in half on a non-ASCII byte next —
+    // either one a panic, on every menu redraw.
+    let o = if port_up(common::ollama_port()) { "UP  " } else { "DOWN" };
+    let llama = if port_up(common::llama_port()) { "UP  " } else { "DOWN" };
     let model = fs::read_to_string(format!("{}/opencode.jsonc", root))
         .ok()
-        .and_then(|t| {
-            t.find("\"model\"").and_then(|i| {
-                let rest = &t[i..];
-                let q1 = rest.find('"').unwrap_or(0);
-                let rest2 = &rest[q1 + 1..];
-                let q2 = rest2.find('"').unwrap_or(0);
-                let rest3 = &rest2[q2 + 1..];
-                let q3 = rest3.find('"').unwrap_or(0);
-                let rest4 = &rest3[q3 + 1..];
-                rest4.find('"').map(|q4| rest4[..q4].to_string())
-            })
-        })
+        .and_then(|t| common::jsonc_model_id(&t))
         .unwrap_or_else(|| "—".to_string());
     let arch = common::arch_label();
     format!(
@@ -646,8 +641,24 @@ fn sparkline(values: &[u32], max_val: u32) -> String {
     out
 }
 
+/// Restores the cursor on the way out, however the scope ends.
+///
+/// This is the only terminal mode state this program touches and it had no
+/// guard: the hide and the restore were two `println!`s with fifteen redraws
+/// between them, so a Ctrl-C during the monitor (or any panic inside it — the
+/// status header is parsed from a file the user edits) left the shell with no
+/// cursor until `reset`.
+struct CursorGuard;
+
+impl Drop for CursorGuard {
+    fn drop(&mut self) {
+        println!("\x1B[?25h");
+    }
+}
+
 fn live_monitor(root: &str) {
     println!("\x1B[?25l"); // Hide cursor
+    let _cursor = CursorGuard;
     let mut history_ram: Vec<u32> = Vec::new();
     let mut iteration = 0;
 
@@ -690,7 +701,9 @@ fn live_monitor(root: &str) {
 
         std::thread::sleep(std::time::Duration::from_millis(800));
     }
-    println!("\x1B[?25h"); // Restore cursor
+    // The cursor comes back through `_cursor` on the way out, including on a
+    // panic or an early return.
+    drop(_cursor);
     pause();
 }
 

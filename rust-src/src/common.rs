@@ -754,7 +754,25 @@ impl DirLock {
 
 impl Drop for DirLock {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
+        // Only remove a lock that is still ours. A reclaim deletes the
+        // directory and the new owner writes its own record into it; the old
+        // owner's `remove_dir_all` would then delete the *new* owner's lock, and
+        // the queue would be handed to a third worker the moment either of them
+        // exited. Comparing the owner record is the only thing that
+        // distinguishes "my lock" from "a lock at my path".
+        let owner_path = format!("{}/owner", self.dir);
+        let still_ours = fs::read_to_string(&owner_path)
+            .ok()
+            .and_then(|record| {
+                record
+                    .split_whitespace()
+                    .next()
+                    .and_then(|pid| pid.parse::<i32>().ok())
+            })
+            .is_some_and(|pid| pid == std::process::id() as i32);
+        if still_ours {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
     }
 }
 
@@ -763,6 +781,52 @@ impl Drop for DirLock {
 fn process_alive(pid: i32) -> Option<bool> {
     let out = Command::new("kill").args(["-0", &pid.to_string()]).output().ok()?;
     Some(out.status.success())
+}
+
+/// Whether an existing lock directory may be taken over.
+///
+/// Split out from [`acquire_lock`] because the rule is the whole safety
+/// argument and it is worth asserting without a filesystem race. `owner` is
+/// the record read from the lock directory, `dir_age_secs` how long ago that
+/// directory was last modified, `probe` the pid liveness check.
+///
+/// The only unconditional reclaim is "the recorded pid is provably gone".
+/// Everything else — no record, a record that will not parse, a pid the
+/// platform cannot answer for — has to wait out `stale_secs`.
+///
+/// The previous version read an *unparsable* record as definitively stale
+/// while treating a *missing* one conservatively, which is backwards: the
+/// acquirer writes the record with `File::create` (O_TRUNC) and then
+/// `write_all`, so between those two syscalls the file exists and is empty, and
+/// a second worker that arrives in that window parsed `pid = -1`, declared the
+/// lock stale and deleted it. Both workers then believed they held
+/// `lac-worker` and drained the same Kanban queue, which is the one thing this
+/// lock exists to prevent. `kill -9` in that window makes the state permanent.
+fn lock_is_reclaimable(
+    owner: Option<&str>,
+    dir_age_secs: Option<u64>,
+    stale_secs: u64,
+    probe: impl Fn(i32) -> Option<bool>,
+) -> bool {
+    let aged_out = dir_age_secs.is_some_and(|age| age >= stale_secs);
+    let pid = owner
+        .and_then(|record| record.split_whitespace().next())
+        .and_then(|pid| pid.parse::<i32>().ok())
+        .filter(|pid| *pid > 0);
+    match pid {
+        Some(pid) => match probe(pid) {
+            // The owner is gone. Reclaim now rather than waiting: this is the
+            // crash case the lock exists to recover from.
+            Some(false) => true,
+            // A live owner keeps the lock regardless of age. A forward clock
+            // jump must not hand one queue to two workers, and a long-running
+            // worker must not lose its lock for being slow.
+            Some(true) => false,
+            // The pid could not be probed at all, so age is all there is.
+            None => aged_out,
+        },
+        None => aged_out,
+    }
 }
 
 /// Acquire `~/.lac/locks/<name>`. Returns None when a live owner holds it.
@@ -777,37 +841,21 @@ pub fn acquire_lock(name: &str, stale_secs: u64) -> Option<DirLock> {
         match fs::create_dir(&dir) {
             Ok(()) => {
                 let owner = format!("{} {}", std::process::id(), now_unix());
+                // Truncate-then-write is the window `lock_is_reclaimable` is
+                // written to survive, but the record is still written before
+                // the lock is handed back.
                 let _ = fs::write(format!("{}/owner", dir), owner);
                 return Some(DirLock { dir });
             }
             Err(_) => {
                 let owner_path = format!("{}/owner", dir);
-                // Liveness first: a live owner keeps the lock even if the
-                // wall clock jumped forward (NTP/VM resume). Wall-clock age
-                // is only a backstop when the pid cannot be probed at all.
-                let stale = match fs::read_to_string(&owner_path) {
-                    Ok(c) => {
-                        let mut it = c.split_whitespace();
-                        let pid: i32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(-1);
-                        let ts: u64 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-                        if pid <= 0 {
-                            true
-                        } else {
-                            match process_alive(pid) {
-                                Some(false) => true,
-                                Some(true) => false,
-                                None => now_unix().saturating_sub(ts) >= stale_secs,
-                            }
-                        }
-                    }
-                    Err(_) => fs::metadata(&dir)
-                        .and_then(|meta| meta.modified())
-                        .ok()
-                        .and_then(|modified| modified.duration_since(SystemTime::UNIX_EPOCH).ok())
-                        .map(|modified| now_unix().saturating_sub(modified.as_secs()) >= stale_secs)
-                        .unwrap_or(false),
-                };
-                if stale {
+                let owner = fs::read_to_string(&owner_path).ok();
+                let dir_age = fs::metadata(&dir)
+                    .and_then(|meta| meta.modified())
+                    .ok()
+                    .and_then(|modified| modified.duration_since(SystemTime::UNIX_EPOCH).ok())
+                    .map(|modified| now_unix().saturating_sub(modified.as_secs()));
+                if lock_is_reclaimable(owner.as_deref(), dir_age, stale_secs, process_alive) {
                     let _ = fs::remove_dir_all(&dir);
                     continue;
                 }
@@ -946,6 +994,86 @@ fn is_executable(p: &Path) -> bool {
     fs::metadata(p)
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
+}
+
+/// The `model` string value out of an `opencode.jsonc`, comments and all.
+///
+/// One implementation, because there were two and only one of them was safe.
+/// The TUI scanned for `"model"` and then stepped over quotes with hard-coded
+/// byte offsets, so a file that ended at `"model"` indexed one past its length
+/// and a file whose next byte was multi-byte UTF-8 sliced a character in
+/// half — both panics, on the TUI's every menu redraw, from a file an
+/// interrupted `>` redirect or a botched checkout can produce.
+///
+/// Byte-safe by construction: every offset comes from `find` on a `char`
+/// boundary, and the value is collected a character at a time so an escape
+/// sequence cannot end it early.
+pub fn jsonc_model_id(source: &str) -> Option<String> {
+    let text = strip_jsonc_comments(source);
+    let at = text.find("\"model\"")?;
+    let rest = &text[at + "\"model\"".len()..];
+    let colon = rest.find(':')?;
+    let after = rest[colon + 1..].trim_start();
+    // A model id is a bare string; anything else is not one.
+    let mut chars = after.chars();
+    if chars.next()? != '"' {
+        return None;
+    }
+    let mut out = String::new();
+    let mut escaped = false;
+    for c in chars {
+        if escaped {
+            out.push(c);
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            return Some(out);
+        } else {
+            out.push(c);
+        }
+    }
+    None
+}
+
+/// Drop `//` and `/* */` comments that are not inside a string literal.
+pub fn strip_jsonc_comments(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let b = s.as_bytes();
+    let mut i = 0;
+    let mut in_str = false;
+    while i < b.len() {
+        if in_str {
+            out.push(b[i] as char);
+            if b[i] == b'\\' && i + 1 < b.len() {
+                out.push(b[i + 1] as char);
+                i += 2;
+                continue;
+            }
+            if b[i] == b'"' {
+                in_str = false;
+            }
+            i += 1;
+        } else if b[i] == b'"' {
+            in_str = true;
+            out.push('"');
+            i += 1;
+        } else if i + 1 < b.len() && b[i] == b'/' && b[i + 1] == b'/' {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+        } else if i + 1 < b.len() && b[i] == b'/' && b[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(b.len());
+        } else {
+            out.push(b[i] as char);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// OS/arch without spawning `uname`. (Kernel release omitted on purpose:
@@ -1299,6 +1427,65 @@ mod tests {
         assert!(acquire_lock(&name, 60).is_none());
         drop(a);
         assert!(acquire_lock(&name, 60).is_some());
+    }
+
+    /// The reclaim rule, on states that are awkward to produce deliberately
+    /// from another process but trivial to state here. The one that matters is
+    /// the empty record: the acquirer creates it with `File::create` (O_TRUNC)
+    /// and then writes into it, so a second worker arriving in that window used
+    /// to read `pid = -1`, call the lock stale, delete it, and take the queue
+    /// while the first worker still held it.
+    #[test]
+    fn a_lock_is_reclaimed_only_on_proof_or_on_age() {
+        let alive = |_: i32| Some(true);
+        let dead = |_: i32| Some(false);
+        let unprobeable = |_: i32| None;
+
+        // Provably gone: reclaimed at once, which is the crash case.
+        assert!(lock_is_reclaimable(Some("999999 100"), Some(0), 900, dead));
+        // Alive: held, however old the directory is. A forward clock jump must
+        // not hand one queue to two workers.
+        assert!(!lock_is_reclaimable(Some("4242 100"), Some(100_000), 900, alive));
+        // Alive and unprobeable pid: still held.
+        assert!(!lock_is_reclaimable(Some("4242 100"), Some(5), 900, unprobeable));
+        // Alive-looking but the platform cannot answer, and it is old enough.
+        assert!(lock_is_reclaimable(Some("4242 100"), Some(901), 900, unprobeable));
+        // The two states that used to disagree. An empty or unparsable record
+        // is exactly the truncate window, so it waits out the backstop like a
+        // missing record does; neither is a proof of anything.
+        for record in [Some(""), Some("   "), Some("not-a-pid 5"), Some("-1 5"), None] {
+            assert!(
+                !lock_is_reclaimable(record, Some(10), 900, dead),
+                "record {record:?} must not be taken as proof"
+            );
+            assert!(
+                lock_is_reclaimable(record, Some(901), 900, dead),
+                "record {record:?} ages out like a missing one"
+            );
+        }
+        // No record and no age to judge by: hold.
+        assert!(!lock_is_reclaimable(None, None, 900, dead));
+    }
+
+    /// A lock that was reclaimed out from under its owner must not be deleted
+    /// by that owner's `Drop`. Otherwise the reclaimer's lock disappears the
+    /// moment the old worker exits, and a third worker walks in.
+    #[test]
+    fn a_lock_only_removes_itself() {
+        let name = format!("test-drop-owner-{}", std::process::id());
+        let lock = acquire_lock(&name, 60).expect("first owner");
+        let dir = lock.dir().to_string();
+        // Simulate the reclaim: the directory is replaced by someone else's.
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("reclaim creates the directory");
+        fs::write(format!("{}/owner", dir), format!("{} {}", std::process::id() + 1, now_unix()))
+            .expect("new owner record");
+        drop(lock);
+        assert!(
+            Path::new(&dir).exists(),
+            "the new owner's lock must survive the old owner's drop"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

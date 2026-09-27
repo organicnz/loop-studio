@@ -185,14 +185,27 @@ The still-open list above, worked through. Same standard as every other pass: no
 
 ### Still open after this pass
 
-- `common::acquire_lock` reads a truncated or malformed `owner` file as definitively stale, so a live worker's lock can be stolen, and `DirLock::drop` then deletes the reclaimer's directory.
-- `lac_tui::status_header` indexes a slice with a hard-coded offset and panics on a truncated or non-ASCII `opencode.jsonc`; it is called on every menu redraw. The TUI also hides the cursor with no `Drop` guard, so a panic or a Ctrl-C leaves the shell without one.
 - `NetworkManager.startRouter` re-arms its auto-start flag before spawning, so a router that cannot bind is retried without bound, leaking one untracked `lac-router` per cycle; the three backend start buttons have no in-flight guard either.
 - `LACConnection` restores its port with `storedPort ?? defaultPort ?? (storedPort ?? 0 > 0 ? storedPort! : 8000)`, where `??` binds looser than `>`: the condition is a nil check, so an out-of-range port persisted from the settings field is restored and every gateway call fails.
 - `ChatStore.cancel()` bumps the stream generation before the partial-save paths, so both are unreachable: a cancelled stream's answer is never persisted and a phantom row stays on screen.
 - `kv-manage check --tokens abc` discards the measurement and exits 0 GREEN, where exit 3 is reserved for usage errors; `kv-manage truncate` writes a manifest that contradicts itself when `--keep` exceeds `--tokens`, and two runs in the same second overwrite each other's manifest.
 - `home_dir()` falls back to `"."`, so with `HOME` unset every state path becomes cwd-relative and `kv-manage truncate` creates a `.lac/` tree in the working directory — which launchd pins to the checkout, and which `.gitignore` does not cover.
 - `lac_tui` option 5 and the Studio attachment reader have their own small honesty gaps (a non-executable `~/.local/bin/lac-serve-mlx` satisfies the install target; an attachment is read whole into memory before being truncated to 128 KB, behind a `|| true` guard on the security-scoped-resource check).
+- `LoopsStore` blocks the main actor for up to 30 s in a synchronous lock-retry loop, so a held `~/.lac/locks/lac-tasks` freezes the whole app; and `ChatView.submit()` clears the attached files before the `isSending` guard, so pressing Return mid-stream discards them silently.
+
+---
+
+## 2026-09-26 Re-verification (10x pro lock + TUI pass)
+
+The lock and terminal paths, which are the ones a crash or a signal reaches.
+
+- **A lock is reclaimed on proof or on age, never on a shrug.** `acquire_lock` read an *unparsable* owner record as definitively stale while treating a *missing* one conservatively — which is exactly backwards. The acquirer writes the record with `File::create` (O_TRUNC) and then `write_all`, so between those two syscalls the file exists and is empty; a second worker arriving in that window parsed `pid = -1`, called the lock stale, deleted the directory and took it. Both workers then held `lac-worker` and drained the same Kanban queue, which is the one thing the lock exists to prevent, and `kill -9` in that window makes the state permanent. The rule is now one pure function: the only unconditional reclaim is a pid that is provably gone, and an absent, empty, unparsable or unprobeable record all wait out the backstop. A live owner still keeps the lock regardless of age, deliberately — a forward clock jump must not hand one queue to two workers, and a slow worker must not lose its lock for being slow.
+- **A lock only removes itself.** `DirLock::drop` called `remove_dir_all` on its path unconditionally, so a lock that had been reclaimed out from under its owner was deleted by that owner's exit — handing the queue to a third worker the moment either of them went. The owner record is now checked against this process before the directory is removed, which is the only thing that distinguishes "my lock" from "a lock at my path".
+- **The TUI cannot panic on your config file.** `status_header` scanned for `"model"` and then stepped over quotes with hard-coded byte offsets: a file truncated right after the key indexed one past its length, and a file whose next byte was multi-byte UTF-8 sliced a character in half. Both panic, on every menu redraw, from a file an interrupted `>` redirect or a botched checkout produces — verified by running the old expression on both inputs. `lac.rs` had a correct parser for the same file the whole time, so there were two implementations and only one was safe; there is now one (`common::jsonc_model_id`), both callers use it, and it is byte-safe by construction. The test pins the two panicking inputs as `None`, plus a `//` inside the value and an escaped quote that must not end it early.
+- **The TUI shows the ports it probed.** Its header printed `:11434` and `:8081` as literals beside probes that honor `LAC_OLLAMA_PORT` and `LAC_LLAMA_PORT` — the same defect fixed in `lac status` a pass earlier, in the other binary.
+- **The cursor comes back.** `live_monitor` hid the cursor, looped fifteen times, and restored it with a `println!` at the end. A Ctrl-C during the monitor — or any panic inside it, from a config file the user edits — left the shell with no cursor until `reset`. A `Drop` guard restores it on every path out, which is also the second route to that state now that the header cannot panic.
+- **Tests:** 350 Rust (was 334) and 39 Swift. The reclaim rule is asserted as a table over the states that matter (empty record, unparsable, negative pid, missing, dead pid, live pid, unprobeable pid, fresh and aged directory) rather than through a race, and the `Drop` test reconstructs the reclaim — remove the directory, let someone else write their own record, drop the original — and asserts their lock survives.
+- **Gate:** `make lint`, `make test`, `make smoke`, `make release-smoke`, `make app-check`, `make delivery-index` all pass.
 
 ---
 

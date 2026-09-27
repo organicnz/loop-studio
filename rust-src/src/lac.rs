@@ -612,74 +612,13 @@ fn cmd_pull(_root: &str, args: &[String]) -> i32 {
 // ------------------------------------------------------------------ status -
 
 /// Best-effort model id from opencode.jsonc (tolerates // and /* */ comments).
-fn strip_jsonc_comments(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let b = s.as_bytes();
-    let mut i = 0;
-    let mut in_str = false;
-    while i < b.len() {
-        if in_str {
-            out.push(b[i] as char);
-            if b[i] == b'\\' && i + 1 < b.len() {
-                out.push(b[i + 1] as char);
-                i += 2;
-                continue;
-            }
-            if b[i] == b'"' {
-                in_str = false;
-            }
-            i += 1;
-        } else if b[i] == b'"' {
-            in_str = true;
-            out.push('"');
-            i += 1;
-        } else if i + 1 < b.len() && b[i] == b'/' && b[i + 1] == b'/' {
-            while i < b.len() && b[i] != b'\n' {
-                i += 1;
-            }
-        } else if i + 1 < b.len() && b[i] == b'/' && b[i + 1] == b'*' {
-            i += 2;
-            while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
-                i += 1;
-            }
-            i = (i + 2).min(b.len());
-        } else {
-            out.push(b[i] as char);
-            i += 1;
-        }
-    }
-    out
-}
-
 fn opencode_model(root: &str) -> String {
+    // One parser, shared with the TUI (see `common::jsonc_model_id`): the copy
+    // that lived here was correct and the one in the TUI was not, which is the
+    // worst way for a parser to be duplicated.
     fs::read_to_string(format!("{}/opencode.jsonc", root))
         .ok()
-        .map(|t| strip_jsonc_comments(&t))
-        .and_then(|t| {
-            t.find("\"model\"").and_then(|i| {
-                let rest = &t[i + 7..];
-                let colon = rest.find(':')?;
-                let after = rest[colon + 1..].trim_start();
-                if !after.starts_with('"') {
-                    return None;
-                }
-                let mut out = String::new();
-                let mut esc = false;
-                for c in after[1..].chars() {
-                    if esc {
-                        out.push(c);
-                        esc = false;
-                    } else if c == '\\' {
-                        esc = true;
-                    } else if c == '"' {
-                        return Some(out);
-                    } else {
-                        out.push(c);
-                    }
-                }
-                None
-            })
-        })
+        .and_then(|t| common::jsonc_model_id(&t))
         .unwrap_or_else(|| "lac/qwen3.8-27b".to_string())
 }
 
@@ -3716,10 +3655,32 @@ mod tests {
 
     #[test]
     fn model_parsed_through_comments() {
+        // Comments, block and line, around and inside the assignment.
         let jsonc = "{\n// comment\n\"model\": \"lac/qwen-test\", /* block */\n}";
-        let stripped = strip_jsonc_comments(jsonc);
-        assert!(!stripped.contains("// comment"));
-        assert!(stripped.contains("\"model\""));
+        assert_eq!(common::jsonc_model_id(jsonc).as_deref(), Some("lac/qwen-test"));
+        // A `//` inside the value is part of the value, not a comment.
+        assert_eq!(
+            common::jsonc_model_id("{\"model\": \"a//b\"}").as_deref(),
+            Some("a//b")
+        );
+        // An escaped quote does not end the value early.
+        assert_eq!(
+            common::jsonc_model_id("{\"model\": \"a\\\"b\"}").as_deref(),
+            Some("a\"b")
+        );
+        // Absent, non-string, and truncated: all None, none of them a panic.
+        for bad in [
+            "{}",
+            "{\"model\": 42}",
+            "{\"model\": \"unterminated",
+            // The two that used to take the TUI down: a file truncated right
+            // after the key, and a multi-byte character where the old scan
+            // assumed one byte.
+            "{\n  \"model\"",
+            "{\n  \"model\"\u{6a21}\u{578b}",
+        ] {
+            assert_eq!(common::jsonc_model_id(bad), None, "{bad:?} must not parse or panic");
+        }
     }
 
     #[test]
