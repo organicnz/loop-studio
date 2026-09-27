@@ -174,6 +174,11 @@ public class LoopsStore: ObservableObject {
     @Published public var runnerLogs: String = ""
     @Published public var isRunningLoop: Bool = false
     @Published public var isGateAwaitingApproval: Bool = false
+    /// True when the Implement phase of the current run did not complete. The
+    /// human gate stays authoritative — the operator may have made the change
+    /// by hand — but the log must not imply this app produced or verified
+    /// anything, and this is what lets it say so.
+    @Published public internal(set) var implementPhaseFailed: Bool = false
     @Published public var errorMessage: String?
     @Published public var selectedModel: String = "mlx-community/Qwen3.8-27B-4bit"
 
@@ -327,6 +332,7 @@ public class LoopsStore: ObservableObject {
         runGeneration &+= 1
         let generation = runGeneration
         isGateAwaitingApproval = false
+        implementPhaseFailed = false
         runnerLogs = "=== Initiating LAC Loop: \(task.loopName) for [\(task.id)] ===\n"
         runnerLogs += "Task: \(task.task)\n\n"
 
@@ -364,6 +370,7 @@ public class LoopsStore: ObservableObject {
                 return
             } catch {
                 guard self.runGeneration == generation else { return }
+                self.implementPhaseFailed = true
                 self.appendLog("⚠ Implement step failed (\(error.localizedDescription)). Continuing to review gate.")
             }
             guard self.runGeneration == generation, !Task.isCancelled else { return }
@@ -396,12 +403,33 @@ public class LoopsStore: ObservableObject {
         }
     }
 
+    /// The operator is the gate — that is the point of the phase — so this
+    /// records their decision and nothing more.
+    ///
+    /// The old line claimed "Changes verified via git diff" on every approval.
+    /// Nothing in this app verifies anything at this moment: the diff sheet is
+    /// the operator's to read, and when `git diff` could not be run the sheet
+    /// says so rather than showing a clean tree. An approval after a failed
+    /// Implement phase now says that too, instead of implying this run produced
+    /// the change being approved.
     public func approveHumanGate() {
         guard let task = activeTask else { return }
         moveTask(id: task.id, to: .completed)
         currentRunnerPhase = .complete
         isGateAwaitingApproval = false
-        appendLog("\n✓ Human Gate APPROVED: Changes verified via git diff. Task \(task.id) marked Completed.")
+        if implementPhaseFailed {
+            appendLog("""
+            \n✓ Human Gate APPROVED by operator. Task \(task.id) marked Completed.
+            ⚠ The Implement phase of this run failed, so nothing was produced or checked by this app — \
+            this completion is on the operator's word alone.
+            """)
+        } else {
+            appendLog("""
+            \n✓ Human Gate APPROVED by operator. Task \(task.id) marked Completed.
+            The operator inspected the diff; this app ran no verification of its own \
+            (no test harness, no diff check) at this point.
+            """)
+        }
         LiquidGlass.haptic(.alignment)
     }
 

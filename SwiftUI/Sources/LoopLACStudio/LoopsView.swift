@@ -11,6 +11,10 @@ public struct LoopsView: View {
     @State private var isDiffSheetPresented: Bool = false
     @State private var activeGitDiff: String = ""
     @State private var isDiffLoading: Bool = false
+    /// Set when `git diff` could not be run or failed. A non-nil value is the
+    /// opposite of a clean tree, and the sheet says so instead of drawing the
+    /// green checkmark that sits above "Approve & Complete".
+    @State private var gitDiffError: String? = nil
     @State private var isLogDrawerExpanded: Bool = true
     @State private var newTaskDescription: String = ""
     @State private var newTaskPriority: TaskPriority = .high
@@ -235,6 +239,10 @@ public struct LoopsView: View {
             kanbanColumn(status: .inProgress, title: "In Progress", color: .blue)
             kanbanColumn(status: .reviewGate, title: "Review & Gate", color: .orange)
             kanbanColumn(status: .completed, title: "Completed", color: .green)
+            // `TaskStatus.failed` existed with no column, so a task moved there
+            // left the board entirely — the one status an operator most needs
+            // to see is the one that disappeared.
+            kanbanColumn(status: .failed, title: "Failed", color: .red)
         }
         .padding(14)
     }
@@ -677,7 +685,27 @@ public struct LoopsView: View {
 
             // Diff Body
             ScrollView(.vertical, showsIndicators: true) {
-                if activeGitDiff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if let failure = gitDiffError {
+                    VStack(spacing: 8) {
+                        Spacer().frame(height: 60)
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 28))
+                            .foregroundColor(.orange)
+                        Text("Could not read the working tree.")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(failure)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .textSelection(.enabled)
+                        Text("Nothing has been verified. Approving now would mark the task complete on no evidence.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                        Spacer().frame(height: 60)
+                    }
+                    .frame(maxWidth: .infinity)
+                } else if activeGitDiff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     VStack(spacing: 8) {
                         Spacer().frame(height: 60)
                         Image(systemName: "checkmark.circle.fill")
@@ -729,10 +757,29 @@ public struct LoopsView: View {
         .liquidGlassModalCard(cornerRadius: 16)
     }
 
+    /// The gate's evidence, and the only thing standing between a loop task and
+    /// a `completed` status.
+    ///
+    /// Three things were wrong with the old version, and all three showed up as
+    /// a green checkmark:
+    ///
+    /// 1. `waitUntilExit()` ran *before* the pipe was drained. A `git diff`
+    ///    passes 64 KiB — about 1,500 lines, which any refactor reaches — and
+    ///    the child then blocks in `write()` while the parent blocks in
+    ///    `wait()`. Nothing times out, `isDiffLoading` stays true, and the
+    ///    button that opens this sheet is disabled, so the gate could never be
+    ///    inspected again. The drain comes first now: reading to EOF ends when
+    ///    the child exits, and the wait that follows returns immediately.
+    /// 2. The exit status was never read. Launched from Finder, Dock or
+    ///    Spotlight, `currentDirectoryPath` is `/`, `git diff` fails with
+    ///    `fatal: not a git repository` on stderr (which was piped and never
+    ///    read), stdout is empty, and the empty diff was rendered as "Working
+    ///    tree is completely clean." — above a one-click "Approve Gate" that
+    ///    marks the task complete and logs that the changes were verified.
+    /// 3. The working directory was the process's, not the workspace's.
     private func loadGitDiff() {
         isDiffLoading = true
-        let cwd = FileManager.default.currentDirectoryPath
-        let root = URL(fileURLWithPath: cwd)
+        let root = workspaceRoot()
 
         Task.detached(priority: .userInitiated) {
             let proc = Process()
@@ -740,28 +787,68 @@ public struct LoopsView: View {
             proc.arguments = ["diff"]
             proc.currentDirectoryURL = root
 
-            let pipe = Pipe()
-            proc.standardOutput = pipe
-            proc.standardError = Pipe()
+            let out = Pipe()
+            let err = Pipe()
+            proc.standardOutput = out
+            proc.standardError = err
 
             do {
                 try proc.run()
-                proc.waitUntilExit()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let diffText = String(data: data, encoding: .utf8) ?? ""
-                await MainActor.run {
-                    self.activeGitDiff = diffText
-                    self.isDiffLoading = false
-                    self.isDiffSheetPresented = true
-                    LiquidGlass.haptic(.alignment)
-                }
             } catch {
                 await MainActor.run {
-                    self.activeGitDiff = "Failed to load git diff: \(error.localizedDescription)"
+                    self.activeGitDiff = ""
+                    self.gitDiffError = "Could not run git: \(error.localizedDescription)"
                     self.isDiffLoading = false
                     self.isDiffSheetPresented = true
                 }
+                return
+            }
+            // Drain first (see 1), then collect the child.
+            let outData = out.fileHandleForReading.readDataToEndOfFile()
+            let errData = err.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+
+            let stderr = String(data: errData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            await MainActor.run {
+                if proc.terminationStatus != 0 {
+                    // A failed audit is not a clean tree, and must never be
+                    // presented as one next to an Approve button.
+                    self.activeGitDiff = ""
+                    self.gitDiffError = stderr.isEmpty
+                        ? "git diff exited \(proc.terminationStatus)"
+                        : stderr
+                } else {
+                    self.gitDiffError = nil
+                    self.activeGitDiff = String(data: outData, encoding: .utf8) ?? ""
+                }
+                self.isDiffLoading = false
+                self.isDiffSheetPresented = true
+                LiquidGlass.haptic(.alignment)
             }
         }
+    }
+
+    /// The repository the loops actually run in. `currentDirectoryPath` is the
+    /// process's working directory, which is `/` for a Dock launch and the
+    /// installer's directory otherwise; neither is the checkout. The repo
+    /// root is found once by walking up from here, which is right for an app
+    /// opened in a checkout and degrades to the process directory otherwise —
+    /// and, either way, the exit status now decides what the sheet claims.
+    private func workspaceRoot() -> URL {
+        let fm = FileManager.default
+        var candidate = URL(fileURLWithPath: fm.currentDirectoryPath)
+        for _ in 0..<8 {
+            var isDirectory: ObjCBool = false
+            if fm.fileExists(atPath: candidate.appendingPathComponent(".git").path, isDirectory: &isDirectory) {
+                return candidate
+            }
+            let parent = candidate.deletingLastPathComponent().path
+            if parent.isEmpty || parent == candidate.path {
+                break
+            }
+            candidate = URL(fileURLWithPath: parent)
+        }
+        return URL(fileURLWithPath: fm.currentDirectoryPath)
     }
 }

@@ -790,17 +790,23 @@ extension WorkspaceFileTree {
             var parsedMap: [String: GitFileStatus] = [:]
             var branch = ""
 
+            // Drain each pipe before waiting on the child. A pipe holds 64 KiB
+            // (measured on this machine), `git status -s` crosses that in a
+            // working tree with a few thousand changes, and then the child
+            // blocks in write() while this task blocks in waitUntilExit() —
+            // which `gitTask?.cancel()` cannot interrupt, so the status column
+            // and the branch name simply stop updating for the session.
             if (try? proc.run()) != nil {
-                proc.waitUntilExit()
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                proc.waitUntilExit()
                 if !Task.isCancelled, let str = String(data: data, encoding: .utf8) {
                     parsedMap = Self.parseGitStatusOutput(str, rootUrl: root)
                 }
             }
 
             if (try? bProc.run()) != nil {
-                bProc.waitUntilExit()
                 let bData = bPipe.fileHandleForReading.readDataToEndOfFile()
+                bProc.waitUntilExit()
                 if !Task.isCancelled, let bStr = String(data: bData, encoding: .utf8) {
                     branch = bStr.trimmingCharacters(in: .whitespacesAndNewlines)
                 }

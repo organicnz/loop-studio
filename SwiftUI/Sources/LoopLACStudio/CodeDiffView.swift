@@ -227,44 +227,44 @@ public func partitionIntoHunks(diffLines: [DiffLine], contextRadius: Int = 3) ->
 
 // MARK: - Synthesize Code from Hunk States
 
+/// The file as it should look for the current per-hunk decisions.
+///
+/// `.accepted` is the only state that applies a change. `.pending` means the
+/// user has not decided about that hunk yet, so its original text stays — which
+/// is the whole point of a chunk-by-chunk canvas. This used to short-circuit to
+/// the full modified file whenever nothing had been *rejected*, so accepting one
+/// of two chunks wrote both into the editor while the second was still badged
+/// "Pending", and the badge state stopped describing what was on screen.
 public func synthesizeCodeFromHunks(
     diffLines: [DiffLine],
     hunks: [DiffHunk]
 ) -> String {
-    // If all hunks are accepted or pending without selective rejects, modifiedCode is returned
     let acceptedHunkIndices = Set(hunks.filter { $0.state == .accepted }.map(\.hunkIndex))
-    let rejectedHunkIndices = Set(hunks.filter { $0.state == .rejected }.map(\.hunkIndex))
 
-    if rejectedHunkIndices.isEmpty {
-        // Return full modified lines
-        let mod = diffLines.filter { $0.type != .removed }.map(\.text)
-        return mod.joined(separator: "\n")
+    // Nothing accepted (all pending, or all rejected) -> the original.
+    guard !acceptedHunkIndices.isEmpty else {
+        return diffLines.filter { $0.type != .added }.map(\.text).joined(separator: "\n")
     }
 
-    if acceptedHunkIndices.isEmpty && !rejectedHunkIndices.isEmpty {
-        // Everything rejected -> return original lines
-        let orig = diffLines.filter { $0.type != .added }.map(\.text)
-        return orig.joined(separator: "\n")
+    // Everything accepted -> the modified file.
+    if acceptedHunkIndices.count == hunks.count {
+        return diffLines.filter { $0.type != .removed }.map(\.text).joined(separator: "\n")
     }
 
-    // Selective: reconstruct line by line
+    // Selective: accepted hunks take the modified form, every other hunk keeps
+    // the original one.
     var resultLines: [String] = []
     for line in diffLines {
-        // Find if this line belongs to a rejected hunk
-        let inRejected = hunks.contains { h in
-            rejectedHunkIndices.contains(h.hunkIndex) && h.lines.contains { $0.id == line.id }
+        let inAccepted = hunks.contains { hunk in
+            acceptedHunkIndices.contains(hunk.hunkIndex)
+                && hunk.lines.contains { $0.id == line.id }
         }
-
-        if inRejected {
-            // For rejected hunks: keep original (unchanged + removed), drop added
-            if line.type != .added {
-                resultLines.append(line.text)
-            }
-        } else {
-            // For accepted/pending hunks: keep modified (unchanged + added), drop removed
+        if inAccepted {
             if line.type != .removed {
                 resultLines.append(line.text)
             }
+        } else if line.type != .added {
+            resultLines.append(line.text)
         }
     }
 

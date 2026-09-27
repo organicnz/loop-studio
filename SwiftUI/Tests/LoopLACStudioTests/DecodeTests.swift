@@ -227,6 +227,46 @@ struct CodeDiffTests {
         let codeRejected = synthesizeCodeFromHunks(diffLines: lines, hunks: rejectedHunks)
         #expect(codeRejected == orig)
     }
+
+    /// Accepting one chunk used to write every chunk. `.pending` was treated as
+    /// accepted, so a two-hunk diff where the user accepted only the first
+    /// produced the whole modified file — into the editor tab, immediately,
+    /// while the second chunk was still badged "Pending".
+    @Test func acceptingOneHunkLeavesUndecidedHunksOut() {
+        let orig = (1...40).map { "let line\($0) = \($0)" }.joined(separator: "\n")
+        let mod = orig
+            .replacingOccurrences(of: "let line5 = 5", with: "let line5 = 500")
+            .replacingOccurrences(of: "let line30 = 30", with: "let line30 = 3000")
+        let lines = computeLineDiff(original: orig, modified: mod)
+        let hunks = partitionIntoHunks(diffLines: lines)
+        #expect(hunks.count == 2, "the fixture must produce two chunks: \(hunks.count)")
+
+        // Everything undecided is the original file, not the modified one.
+        let untouched = synthesizeCodeFromHunks(diffLines: lines, hunks: hunks)
+        #expect(untouched == orig)
+
+        // Accept the first chunk only.
+        var firstOnly = hunks
+        firstOnly[0].state = .accepted
+        let selective = synthesizeCodeFromHunks(diffLines: lines, hunks: firstOnly)
+        #expect(selective != mod, "the pending chunk must not be applied")
+        #expect(selective != orig, "the accepted chunk must be applied")
+        #expect(selective.contains("let line5 = 500"))
+        #expect(!selective.contains("let line5 = 5\n") || selective.contains("let line5 = 500"))
+        #expect(selective.contains("let line30 = 30"), "pending chunk keeps its original line")
+        #expect(!selective.contains("let line30 = 3000"))
+
+        // Reject the first instead: the second is still undecided, so the
+        // result is still the original.
+        var rejectFirst = hunks
+        rejectFirst[0].state = .rejected
+        #expect(synthesizeCodeFromHunks(diffLines: lines, hunks: rejectFirst) == orig)
+
+        // Accepting both is the modified file again.
+        var both = hunks
+        for i in both.indices { both[i].state = .accepted }
+        #expect(synthesizeCodeFromHunks(diffLines: lines, hunks: both) == mod)
+    }
 }
 
 struct LoopsStoreTests {
@@ -277,6 +317,57 @@ struct LoopsStoreTests {
         // Delete task
         store.deleteTask(id: "task-unit-test")
         #expect(!store.tasks.contains(where: { $0.id == "task-unit-test" }))
+    }
+
+    /// The human gate recorded a verification that never happened. It is the
+    /// last line before a task is marked complete, and it claimed the changes
+    /// were "verified via git diff" no matter what the run had done — including
+    /// a run whose Implement phase had failed outright.
+    @Test @MainActor func theGateRecordsTheOperatorsDecisionAndNothingMore() {
+        let root = testDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = LoopsStore(tasksURL: root.appendingPathComponent("tasks.yaml"))
+        let task = TaskItem(
+            id: "task-gate-honesty",
+            task: "Ship the thing",
+            priority: .high,
+            status: .reviewGate
+        )
+        store.addTask(task)
+        store.moveTask(id: task.id, to: .reviewGate)
+        store.activeTask = store.tasks.first(where: { $0.id == task.id })
+        store.isGateAwaitingApproval = true
+
+        store.approveHumanGate()
+        #expect(store.tasks.first(where: { $0.id == task.id })?.status == .completed)
+        #expect(
+            !store.runnerLogs.contains("verified via git diff"),
+            "the app never verified anything at the gate: \(store.runnerLogs)"
+        )
+        #expect(
+            store.runnerLogs.contains("no verification of its own"),
+            "the record must say what it did not do: \(store.runnerLogs)"
+        )
+        #expect(!store.isGateAwaitingApproval)
+
+        // Same again after a failed Implement phase: the operator still decides,
+        // but the record carries the failure with it.
+        let second = TaskItem(
+            id: "task-gate-failed-implement",
+            task: "Ship the other thing",
+            priority: .medium,
+            status: .reviewGate
+        )
+        store.addTask(second)
+        store.moveTask(id: second.id, to: .reviewGate)
+        store.activeTask = store.tasks.first(where: { $0.id == second.id })
+        store.implementPhaseFailed = true
+        store.approveHumanGate()
+        #expect(
+            store.runnerLogs.contains("Implement phase of this run failed"),
+            "a failed implement must travel with the approval: \(store.runnerLogs)"
+        )
+        #expect(!store.runnerLogs.contains("verified via git diff"))
     }
 }
 
