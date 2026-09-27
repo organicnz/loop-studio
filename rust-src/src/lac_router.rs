@@ -157,31 +157,99 @@ fn backend_port(id: usize) -> u16 {
 
 struct HealthCache {
     inner: Mutex<HashMap<u16, (bool, Instant)>>,
+    /// One lock per port. This is what makes a burst of concurrent misses
+    /// cost one probe rather than N.
+    probes: Mutex<HashMap<u16, Arc<Mutex<()>>>>,
     ttl: Duration,
     negative_ttl: Duration,
 }
 
 impl HealthCache {
-    fn new(ttl: Duration) -> Self {
+    /// `negative_ttl` is a separate argument rather than derived from `ttl`,
+    /// because a negative verdict is worth keeping for much less time than a
+    /// positive one: a backend that is coming up should be picked up quickly,
+    /// and being wrong about "down" only costs a retry. It used to be a
+    /// hardcoded 2500ms inside the constructor, which meant `new(ttl)` did
+    /// not actually mean "expire after ttl" — a caller passing a 30ms window
+    /// still got 2.5s of negative caching, and a test could not see the
+    /// difference without sleeping for seconds.
+    fn new(ttl: Duration, negative_ttl: Duration) -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),
+            probes: Mutex::new(HashMap::new()),
             ttl,
-            negative_ttl: Duration::from_millis(2500),
+            negative_ttl,
         }
+    }
+
+    fn window(&self, value: bool) -> Duration {
+        if value {
+            self.ttl
+        } else {
+            self.negative_ttl
+        }
+    }
+
+    /// The cached verdict for `port`, if it has not expired.
+    fn cached(&self, port: u16) -> Option<bool> {
+        let guard = self.inner.lock().ok()?;
+        let (value, timestamp) = guard.get(&port)?;
+        (timestamp.elapsed() < self.window(*value)).then_some(*value)
     }
 
     /// Cached HTTP readiness. One `/v1/models` probe per backend per TTL
     /// window instead of 3× TCP connects on every request.
     fn ready(&self, port: u16) -> bool {
-        if let Ok(guard) = self.inner.lock() {
-            if let Some((value, timestamp)) = guard.get(&port) {
-                let window = if *value { self.ttl } else { self.negative_ttl };
-                if timestamp.elapsed() < window {
-                    return *value;
-                }
-            }
+        self.ready_with(port, || common::http_ready(port, 1500))
+    }
+
+    /// `ready`, with the probe injected so the coalescing can be tested
+    /// without a socket.
+    ///
+    /// The old version dropped the cache lock before probing, so N threads
+    /// arriving together on an expired entry fired N identical probes at the
+    /// same backend — and the router is one thread per connection with 128
+    /// slots, so a burst after a TTL expiry was up to 128 simultaneous
+    /// `GET /v1/models` at a single-threaded inference server. Each held an
+    /// inflight slot for the length of the probe.
+    ///
+    /// The fix serializes probes per port and re-checks the cache after
+    /// acquiring, so the losers of the race find a fresh answer and never
+    /// probe at all. It also removes a second bug for free: probes used to
+    /// `insert` unconditionally, so a slow probe landing after a fast one
+    /// overwrote a good positive with a stale negative and cost up to
+    /// `negative_ttl` of spurious 503s. With one prober per port, the last
+    /// writer is always the most recent.
+    ///
+    /// Ports do not block each other — the lock is per port, not global — so
+    /// a slow MLX probe never delays probing llama.
+    fn ready_with<F: FnOnce() -> bool>(&self, port: u16, probe: F) -> bool {
+        if let Some(value) = self.cached(port) {
+            return value;
         }
-        let value = common::http_ready(port, 1500);
+        // Per-port probe lock, created once and kept for the process's life.
+        // Three ports, so the map is bounded and never needs pruning.
+        let probe_lock = {
+            let mut guard = match self.probes.lock() {
+                Ok(guard) => guard,
+                // A poisoned lock must not take the gateway down: fall back to
+                // probing directly, which is what the code did unconditionally
+                // before.
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            Arc::clone(guard.entry(port).or_default())
+        };
+        let _serialized = match probe_lock.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        // Re-check: the thread we queued behind may have just refreshed this.
+        // Its result is as good as one we would compute, and it cost the
+        // backend one request instead of two.
+        if let Some(value) = self.cached(port) {
+            return value;
+        }
+        let value = probe();
         if let Ok(mut guard) = self.inner.lock() {
             guard.insert(port, (value, Instant::now()));
         }
@@ -212,12 +280,83 @@ type StatsMap = Arc<Mutex<HashMap<u16, BackendStats>>>;
 /// entries older than 5 minutes are ignored (backends come and go).
 type RouteMap = Arc<Mutex<HashMap<String, (u16, Instant)>>>;
 
+/// The merged `/v1/models` catalog, held just long enough to collapse a burst
+/// of concurrent callers into one fetch per backend.
+///
+/// `merged_models` is not free: it opens a fresh TCP connection to every ready
+/// backend and reads its catalog, and nothing cached the result. The router
+/// runs one thread per connection with 128 slots, so a client that polls
+/// `/v1/models` — which every model picker does, and OpenCode does on every
+/// launch — turned one cheap metadata request into three backend connections
+/// per caller, unbounded in the number of callers. `HealthCache` only ever
+/// cached the boolean readiness probe, not the catalog behind it.
+///
+/// The window is deliberately short. A catalog is metadata that changes when
+/// the operator loads or unloads a model, and a picker that cannot see a newly
+/// loaded model for a second is not a problem; a picker that hammers three
+/// inference servers every time it opens is.
+type CatalogCache = Arc<CatalogMemo>;
+
+struct CatalogMemo {
+    entry: Mutex<Option<(String, Instant)>>,
+    /// Coalesces concurrent fetches the way `HealthCache::probes` does, so a
+    /// burst is one fetch rather than one per caller.
+    fetch_lock: Mutex<()>,
+    ttl: Duration,
+}
+
+impl CatalogMemo {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            entry: Mutex::new(None),
+            fetch_lock: Mutex::new(()),
+            ttl,
+        }
+    }
+
+    /// A fresh catalog if one is cached, else `None`.
+    fn get(&self) -> Option<String> {
+        let guard = self.entry.lock().ok()?;
+        let (body, at) = guard.as_ref()?;
+        (at.elapsed() < self.ttl).then(|| body.clone())
+    }
+
+    fn put(&self, body: String) {
+        if let Ok(mut guard) = self.entry.lock() {
+            *guard = Some((body, Instant::now()));
+        }
+    }
+
+    /// Serializes a fetch against its peers, re-checking after acquiring so
+    /// the losers of the race reuse the winner's body instead of refetching.
+    fn fetch<F: FnOnce() -> Option<String>>(&self, build: F) -> Option<String> {
+        if let Some(body) = self.get() {
+            return Some(body);
+        }
+        let _serialized = match self.fetch_lock.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(body) = self.get() {
+            return Some(body);
+        }
+        let body = build()?;
+        self.put(body.clone());
+        Some(body)
+    }
+}
+
 const BREAKER_ERRORS: u32 = 3;
 const BREAKER_COOLDOWN: Duration = Duration::from_secs(30);
 const ROUTE_TTL: Duration = Duration::from_secs(300);
 const USAGE_ROTATE_BYTES: u64 = 8_000_000;
 /// Unmeasured backends sort as slow: measured evidence always wins.
 const EWMA_UNKNOWN_MS: f64 = 30_000.0;
+
+/// How long a "this backend is not serving" answer is trusted. Shorter than
+/// the positive window on purpose: a backend that is coming up should be
+/// picked up promptly, and a wrong negative only costs one retry.
+const NEGATIVE_TTL: Duration = Duration::from_millis(2500);
 
 fn note_success(stats: &StatsMap, port: u16, ttfb_ms: f64, req_body: u64, resp_body: u64) {
     if let Ok(mut m) = stats.lock() {
@@ -300,8 +439,20 @@ fn usage_log_path() -> String {
     common::usage_log_paths().0
 }
 
-/// One JSONL line per proxied request. Rotated past 8MB (previous window
-/// kept beside it as `.1`) so the log can never fill a disk by itself.
+/// One JSONL line per *attempt* at a request. Rotated past 8MB (previous
+/// window kept beside it as `.1`) so the log can never fill a disk by itself.
+///
+/// A retried request produces several lines sharing one `rid`, one per backend
+/// tried, and `attempt` numbers them. `req_body` and the `est_tokens` derived
+/// from it are charged on the **first** attempt only: those bytes belong to the
+/// request, and the client sent them once no matter how many backends the
+/// router tried them against. They used to be re-charged per attempt, so
+/// `kv-manage` — which sums `est_tokens` over the window — read a request that
+/// failed over twice as up to three times the traffic it actually was, and
+/// three times again when all three backends refused.
+///
+/// So the summing rule a reader needs is: add `est_tokens` over lines, which is
+/// now correct, or add `req_body` only where `attempt` is 0.
 #[allow(clippy::too_many_arguments)]
 fn log_usage(
     rid: usize,
@@ -313,6 +464,7 @@ fn log_usage(
     est_tokens: u64,
     ttfb_ms: Option<f64>,
     outcome: &str,
+    attempt: u32,
 ) {
     let (path, rotated) = common::usage_log_paths();
     if std::fs::metadata(&path)
@@ -326,9 +478,10 @@ fn log_usage(
         let _ = std::fs::rename(&path, rotated);
     }
     let line = format!(
-        "{{\"ts\":{},\"rid\":{},\"backend\":\"{}\",\"port\":{},\"model\":\"{}\",\"req_body\":{},\"resp_body\":{},\"est_tokens\":{},\"ttfb_ms\":{},\"outcome\":\"{}\"}}",
+        "{{\"ts\":{},\"rid\":{},\"attempt\":{},\"backend\":\"{}\",\"port\":{},\"model\":\"{}\",\"req_body\":{},\"resp_body\":{},\"est_tokens\":{},\"ttfb_ms\":{},\"outcome\":\"{}\"}}",
         common::now_unix(),
         rid,
+        attempt,
         backend,
         port,
         common::json_escape(model),
@@ -1404,7 +1557,11 @@ fn scan_string(b: &[u8], i: usize) -> Option<(String, usize)> {
 /// priority, first id wins). Records id -> backend in the route map so
 /// later requests naming a model can go straight there. Falls back to
 /// plain forwarding on any parse failure so the endpoint never regresses.
-fn merged_models(hc: &HealthCache, routes: &RouteMap) -> Option<String> {
+fn merged_models(hc: &HealthCache, routes: &RouteMap, catalog: &CatalogCache) -> Option<String> {
+    catalog.fetch(|| merged_models_uncached(hc, routes))
+}
+
+fn merged_models_uncached(hc: &HealthCache, routes: &RouteMap) -> Option<String> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut items: Vec<String> = Vec::new();
     for (_, port) in tier_backends() {
@@ -2569,6 +2726,7 @@ fn handle_connection(
     hc: Arc<HealthCache>,
     stats: StatsMap,
     routes: RouteMap,
+    catalog: CatalogCache,
     inflight: Arc<AtomicUsize>,
     body_budget: BodyBudget,
     rid: Arc<AtomicUsize>,
@@ -2724,7 +2882,7 @@ fn handle_connection(
     // Smart endpoint: aggregate model catalogs so OpenCode's picker sees
     // every live backend at once.
     if method == "GET" && (path == "/v1/models" || path.starts_with("/v1/models?")) {
-        if let Some(body) = merged_models(&hc, &routes) {
+        if let Some(body) = merged_models(&hc, &routes, &catalog) {
             let mut c = client;
             let _ = json_response(&mut c, "200 OK", &body, cors.as_deref());
             eprintln!("[lac-router rid={}] GET /v1/models -> merged ({} bytes)", rid_n, body.len());
@@ -2839,6 +2997,7 @@ fn handle_connection(
                     est,
                     ttfb,
                     "proxied",
+                    tried.len() as u32,
                 );
                 eprintln!(
                     "[lac-router rid={}] {} {} -> {} (:{} up={} down={} ttfb={} {:.1}s)",
@@ -2861,7 +3020,18 @@ fn handle_connection(
                 // common outage there is, and the usage log is where an
                 // operator looks. Without this line a total-outage window
                 // leaves no trace there at all.
-                let up_body = initial.len().saturating_sub(header_len) as u64;
+                // Charged once per request, not once per attempt: these bytes
+                // are the request the client sent, and it sent them once no
+                // matter how many backends it was tried against.
+                //
+                // `tried` already includes this attempt's own port — the arm
+                // pushes it above — so a length of 1 means first attempt.
+                let first_attempt = tried.len() == 1;
+                let up_body = if first_attempt {
+                    initial.len().saturating_sub(header_len) as u64
+                } else {
+                    0
+                };
                 let est = up_body / 4;
                 log_usage(
                     rid_n,
@@ -2873,6 +3043,7 @@ fn handle_connection(
                     est,
                     None,
                     "unreachable",
+                    tried.len() as u32,
                 );
                 continue;
             }
@@ -2880,7 +3051,18 @@ fn handle_connection(
                 note_error(&stats, port);
                 tried.push(port);
                 answered.push(format!("{} http {}", backend_name(bid), status));
-                let up_body = initial.len().saturating_sub(header_len) as u64;
+                // Charged once per request, not once per attempt: these bytes
+                // are the request the client sent, and it sent them once no
+                // matter how many backends it was tried against.
+                //
+                // `tried` already includes this attempt's own port — the arm
+                // pushes it above — so a length of 1 means first attempt.
+                let first_attempt = tried.len() == 1;
+                let up_body = if first_attempt {
+                    initial.len().saturating_sub(header_len) as u64
+                } else {
+                    0
+                };
                 let est = up_body / 4;
                 log_usage(
                     rid_n,
@@ -2892,6 +3074,7 @@ fn handle_connection(
                     est,
                     ttfb,
                     "http-error",
+                    tried.len() as u32,
                 );
                 eprintln!(
                     "[lac-router rid={}] {} {} -> backend HTTP {}; trying next",
@@ -2912,6 +3095,8 @@ fn handle_connection(
                     est,
                     ttfb,
                     "unsupported-upgrade",
+                    // Terminal: the request was never tried anywhere else.
+                    0,
                 );
                 let mut c = client;
                 let _ = json_response(
@@ -2926,7 +3111,18 @@ fn handle_connection(
                 note_error(&stats, port);
                 tried.push(port);
                 answered.push(format!("{} invalid-response", backend_name(bid)));
-                let up_body = initial.len().saturating_sub(header_len) as u64;
+                // Charged once per request, not once per attempt: these bytes
+                // are the request the client sent, and it sent them once no
+                // matter how many backends it was tried against.
+                //
+                // `tried` already includes this attempt's own port — the arm
+                // pushes it above — so a length of 1 means first attempt.
+                let first_attempt = tried.len() == 1;
+                let up_body = if first_attempt {
+                    initial.len().saturating_sub(header_len) as u64
+                } else {
+                    0
+                };
                 let est = (up_body + down) / 4;
                 log_usage(
                     rid_n,
@@ -2938,6 +3134,7 @@ fn handle_connection(
                     est,
                     ttfb,
                     "bad-response",
+                    tried.len() as u32,
                 );
                 eprintln!(
                     "[lac-router rid={}] {} {} -> :{} invalid-response; trying next",
@@ -2958,6 +3155,7 @@ fn handle_connection(
                     est,
                     ttfb,
                     "client-gone",
+                    tried.len() as u32,
                 );
                 return;
             }
@@ -2980,6 +3178,7 @@ fn handle_connection(
                     est,
                     ttfb,
                     "stream-cut",
+                    tried.len() as u32,
                 );
                 eprintln!(
                     "[lac-router rid={}] {} {} -> :{} stream-cut (up={} down={} {:.1}s)",
@@ -3007,6 +3206,7 @@ fn handle_connection(
                     est,
                     ttfb,
                     "stream-broke",
+                    tried.len() as u32,
                 );
                 eprintln!(
                     "[lac-router rid={}] {} {} -> :{} stream-broke (up={} down={} {:.1}s)",
@@ -3094,9 +3294,16 @@ fn main() {
         .map(|addr| addr.to_string())
         .unwrap_or_else(|_| bind_addr.clone());
 
-    let hc = Arc::new(HealthCache::new(Duration::from_secs(5)));
+    let hc = Arc::new(HealthCache::new(Duration::from_secs(5), NEGATIVE_TTL));
     let stats: StatsMap = Arc::new(Mutex::new(HashMap::new()));
     let routes: RouteMap = Arc::new(Mutex::new(HashMap::new()));
+    let catalog: CatalogCache = Arc::new(CatalogMemo::new(Duration::from_millis(
+        env::var("LAC_ROUTER_CATALOG_TTL_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|&ms| ms <= 60_000)
+            .unwrap_or(1_000),
+    )));
     let inflight = Arc::new(AtomicUsize::new(0));
     let body_budget = BodyBudget {
         held: Arc::new(AtomicUsize::new(0)),
@@ -3194,13 +3401,14 @@ fn main() {
                 let hc = Arc::clone(&hc);
                 let stats = Arc::clone(&stats);
                 let routes = Arc::clone(&routes);
+                let catalog = Arc::clone(&catalog);
                 let inflight = Arc::clone(&inflight);
                 let rid = Arc::clone(&rid);
                 let tok = Arc::clone(&expected_token);
                 let body_budget = body_budget.clone();
                 thread::spawn(move || {
                     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        handle_connection(client, pref, hc, stats, routes, inflight, body_budget, rid, started, tok);
+                        handle_connection(client, pref, hc, stats, routes, catalog, inflight, body_budget, rid, started, tok);
                     }));
                     if let Err(e) = res {
                         eprintln!("[lac-router] recovered safely from thread panic in connection handler: {:?}", e);
@@ -3355,6 +3563,242 @@ mod tests {
             0,
             "every reservation was returned"
         );
+    }
+
+    #[test]
+    fn concurrent_misses_cost_one_probe_not_one_per_thread() {
+        // The bug: the cache lock was released before probing, so a burst of
+        // threads arriving on an expired entry fired one probe each. With one
+        // thread per connection and 128 slots, that was up to 128 identical
+        // `GET /v1/models` at one single-threaded inference server, each
+        // holding an inflight slot for the length of the probe.
+        use std::sync::atomic::AtomicUsize;
+        let cache = Arc::new(HealthCache::new(Duration::from_secs(5), NEGATIVE_TTL));
+        let probes = Arc::new(AtomicUsize::new(0));
+        let mut workers = Vec::new();
+        for _ in 0..64 {
+            let (cache, probes) = (Arc::clone(&cache), Arc::clone(&probes));
+            workers.push(thread::spawn(move || {
+                cache.ready_with(8080, || {
+                    probes.fetch_add(1, Ordering::SeqCst);
+                    // Long enough that every thread is waiting by the time the
+                    // first probe finishes, so a per-thread probe would
+                    // certainly be counted.
+                    std::thread::sleep(Duration::from_millis(120));
+                    true
+                })
+            }));
+        }
+        for worker in workers {
+            assert!(worker.join().expect("worker finished"), "every caller sees the verdict");
+        }
+        assert_eq!(
+            probes.load(Ordering::SeqCst),
+            1,
+            "a burst of 64 concurrent misses must probe the backend exactly once"
+        );
+
+        // Within the TTL it is still one probe in total, not one more.
+        let before = probes.load(Ordering::SeqCst);
+        for _ in 0..16 {
+            assert!(cache.ready_with(8080, || {
+                probes.fetch_add(1, Ordering::SeqCst);
+                true
+            }));
+        }
+        assert_eq!(probes.load(Ordering::SeqCst), before, "a warm cache must not probe");
+    }
+
+    #[test]
+    fn probes_for_different_ports_do_not_block_each_other() {
+        // The per-port lock must be per port. A global probe lock would make a
+        // slow MLX probe delay llama, and with three backends that is the
+        // difference between probing them in parallel and serially.
+        let cache = Arc::new(HealthCache::new(Duration::ZERO, Duration::ZERO));
+        let start = Instant::now();
+        let mut workers = Vec::new();
+        for port in [8080u16, 8081, 11434] {
+            let cache = Arc::clone(&cache);
+            workers.push(thread::spawn(move || {
+                cache.ready_with(port, || {
+                    std::thread::sleep(Duration::from_millis(200));
+                    true
+                })
+            }));
+        }
+        for worker in workers {
+            assert!(worker.join().expect("worker finished"));
+        }
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "three 200ms probes took {elapsed:?} — they are serializing"
+        );
+    }
+
+    #[test]
+    fn a_slow_probe_cannot_overwrite_a_fresher_verdict() {
+        // Probes used to `insert` unconditionally, so a slow probe that
+        // finished after a fast one replaced a good positive with its own
+        // stale negative, costing up to `negative_ttl` of spurious 503s.
+        // With one prober per port this cannot happen; assert the shape of it
+        // that is observable — a negative verdict is cached for the short
+        // window and a positive for the long one, and a fresh entry is never
+        // displaced by an older one.
+        let cache = HealthCache::new(Duration::from_secs(5), NEGATIVE_TTL);
+        // First probe says down. The negative window is the short one.
+        assert!(!cache.ready_with(8080, || false));
+        assert!(!cache.ready_with(8080, || panic!("must not re-probe inside the negative window")));
+        // A different port is independent.
+        assert!(cache.ready_with(8081, || true));
+        assert!(cache.ready_with(8081, || panic!("must not re-probe inside the positive window")));
+        // Both windows are honoured independently, so an expired negative is
+        // re-probed. The production negative window is 2.5s, which a unit test
+        // should not sleep through — that is exactly why it is an argument now
+        // rather than a constant in the constructor.
+        let brief = HealthCache::new(Duration::from_millis(30), Duration::from_millis(30));
+        assert!(!brief.ready_with(8080, || false));
+        std::thread::sleep(Duration::from_millis(60));
+        let mut probed = false;
+        assert!(brief.ready_with(8080, || {
+            probed = true;
+            true
+        }));
+        assert!(probed, "an expired entry must be re-probed");
+    }
+
+    #[test]
+    fn a_burst_of_catalog_readers_costs_one_fetch() {
+        // `merged_models` opened a fresh connection to every ready backend and
+        // read its catalog, and nothing cached the result. One thread per
+        // connection with 128 slots meant a client polling /v1/models turned
+        // one cheap metadata request into three backend connections per
+        // caller, unbounded in the number of callers.
+        let memo = Arc::new(CatalogMemo::new(Duration::from_secs(5)));
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let mut workers = Vec::new();
+        for _ in 0..48 {
+            let (memo, fetches) = (Arc::clone(&memo), Arc::clone(&fetches));
+            workers.push(thread::spawn(move || {
+                memo.fetch(|| {
+                    fetches.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(100));
+                    Some("{\"object\":\"list\",\"data\":[{\"id\":\"a\"}]}".to_string())
+                })
+            }));
+        }
+        for worker in workers {
+            let body = worker.join().expect("worker finished");
+            assert_eq!(
+                body.as_deref(),
+                Some("{\"object\":\"list\",\"data\":[{\"id\":\"a\"}]}"),
+                "every caller must get the same catalog"
+            );
+        }
+        assert_eq!(
+            fetches.load(Ordering::SeqCst),
+            1,
+            "a burst of 48 readers must fetch the catalog once"
+        );
+    }
+
+    #[test]
+    fn an_absent_catalog_is_not_cached() {
+        // `None` from merged_models means "nothing extractable anywhere", and
+        // the caller then falls through to single-backend forwarding so the
+        // client gets the backend's real error. That is a live answer, not a
+        // cached one: caching it would keep serving a fall-through for the
+        // whole window after a backend came up and started advertising models,
+        // which is precisely when a model picker needs to see them.
+        let memo = CatalogMemo::new(Duration::from_secs(300));
+        let calls = AtomicUsize::new(0);
+        for _ in 0..3 {
+            let calls = &calls;
+            let out = memo.fetch(|| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                None
+            });
+            assert_eq!(out, None);
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "an absent catalog must be re-evaluated, not remembered"
+        );
+
+        // A present one is remembered.
+        let calls = AtomicUsize::new(0);
+        for _ in 0..3 {
+            let calls = &calls;
+            let out = memo.fetch(|| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Some("{}".to_string())
+            });
+            assert_eq!(out.as_deref(), Some("{}"));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "a present catalog is cached");
+    }
+
+    #[test]
+    fn a_catalog_expires_so_a_newly_loaded_model_becomes_visible() {
+        // The cache must not outlive the operator's patience. A picker that
+        // cannot see a model that was just loaded for a moment is fine; one
+        // that hammers three inference servers every time it opens is not.
+        let memo = CatalogMemo::new(Duration::from_millis(40));
+        let calls = AtomicUsize::new(0);
+        let fetch = || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Some(format!("{{\"n\":{}}}", calls.load(Ordering::SeqCst)))
+        };
+        assert_eq!(memo.fetch(fetch).as_deref(), Some("{\"n\":1}"));
+        assert_eq!(memo.fetch(fetch).as_deref(), Some("{\"n\":1}"));
+        std::thread::sleep(Duration::from_millis(80));
+        assert_eq!(
+            memo.fetch(fetch).as_deref(),
+            Some("{\"n\":2}"),
+            "an expired catalog must be rebuilt"
+        );
+    }
+
+    /// The summing rule a reader of the usage log depends on, expressed
+    /// directly so it cannot drift from the call sites.
+    ///
+    /// `kv-manage` sums `est_tokens` over the window, and the docs call this
+    /// log "the honest token source". Before the attempt field it was not: a
+    /// request that failed over twice was recorded three times with the same
+    /// `req_body`, so the estimate read up to 3x the traffic that actually
+    /// happened, and up to 3x again when all three backends refused.
+    #[test]
+    fn a_retried_request_is_charged_once_not_once_per_attempt() {
+        // The shape the three retry arms share: `tried` accumulates one port
+        // per backend already attempted.
+        let request_bytes = 4000u64;
+        let header_len = 120usize;
+        let initial_len = request_bytes as usize + header_len;
+
+        let charged: Vec<u64> = ["", "first", "second"]
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                let mut tried: Vec<u16> = Vec::new();
+                // Mirror the arm exactly: it pushes *this* attempt's port
+                // before logging, so by the time the body is charged `tried`
+                // already holds every attempt including this one.
+                for port in [8080u16, 8081, 8082].iter().take(index + 1) {
+                    tried.push(*port);
+                }
+                let first_attempt = tried.len() == 1;
+                if first_attempt {
+                    initial_len.saturating_sub(header_len) as u64
+                } else {
+                    0
+                }
+            })
+            .collect();
+
+        assert_eq!(charged, vec![4000, 0, 0], "the body is charged exactly once");
+        // And the number a reader would sum: one request, one charge.
+        assert_eq!(charged.iter().sum::<u64>(), request_bytes);
     }
 
     #[test]
