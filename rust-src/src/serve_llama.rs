@@ -92,6 +92,10 @@ fn backoff_ms(attempt: u32) -> u64 {
     exp.min(BACKOFF_CAP_MS) + jitter_ms(attempt)
 }
 
+/// Launch the engine and wait for it, keeping the pid published so a
+/// termination signal can be forwarded to it. `status()` consumed the
+/// `Child` and returned only an `ExitStatus`, which left the parent with
+/// no handle to signal — the mechanism behind orphaned engines.
 fn spawn_server(
     model: &str,
     port: u16,
@@ -119,7 +123,13 @@ fn spawn_server(
         .arg(parallel.to_string())
         .arg("-n-gpu-layers")
         .arg("999")
-        .status()
+        .spawn()
+        .and_then(|mut child| {
+            common::set_child_pid(child.id() as i32);
+            let status = child.wait();
+            common::clear_child_pid();
+            status
+        })
 }
 
 /// Set by the readiness prober the first time the engine answers HTTP.
@@ -180,12 +190,17 @@ fn daemon_retry_loop(
             ));
         }
         let wait = backoff_ms(crashes - 1);
-        std::thread::sleep(Duration::from_millis(wait));
+        if !common::sleep_unless_terminating(Duration::from_millis(wait)) {
+            // A signal arrived during backoff. Do not relaunch: the
+            // operator asked for this lane to be down.
+            return std::io::Error::other("terminated while backing off");
+        }
     }
 }
 
 fn main() {
     common::ignore_sigpipe();
+    common::forward_terminate_to_child_process();
     eprintln!("=== LAC serve-llama v2.6 (Rust, port-coexistent, thermal-aware) ===");
 
     if !which("llama-server") {

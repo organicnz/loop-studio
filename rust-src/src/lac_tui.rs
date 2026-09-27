@@ -197,9 +197,39 @@ fn serve_menu(root: &str) {
                 pause();
             }
             "4" => {
-                let a = common::kill_matching("mlx_lm.server");
-                let b = common::kill_matching("llama-server");
-                println!("signaled {} mlx + {} llama processes", a, b);
+                // Wrappers first, engines second, and the order is the whole
+                // fix. This used to signal only `mlx_lm.server` and
+                // `llama-server`, which under `LAUNCHDAEMON=1` — exactly what
+                // the serve-mlx plist sets — left the supervising wrapper
+                // alive to faithfully respawn the engine it had just killed,
+                // 30 to 60 seconds later. "Stop" did not stop.
+                //
+                // Signalling a wrapper now takes its engine with it: the
+                // wrapper forwards the signal rather than orphaning a process
+                // that still holds the port and the weights. The engine sweep
+                // afterwards is belt and braces for anything not owned by a
+                // wrapper, such as an engine someone started by hand.
+                let mut parts = Vec::new();
+                for pattern in ["serve-mlx", "serve-llama"] {
+                    let killed = common::kill_matching(pattern);
+                    if killed > 0 {
+                        parts.push(format!("{killed} {pattern}"));
+                    }
+                }
+                // Give the wrappers a moment to forward the signal and reap
+                // their children before sweeping for engines directly.
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                for pattern in ["mlx_lm.server", "llama-server"] {
+                    let killed = common::kill_matching(pattern);
+                    if killed > 0 {
+                        parts.push(format!("{killed} {pattern}"));
+                    }
+                }
+                if parts.is_empty() {
+                    println!("no MLX or llama processes running");
+                } else {
+                    println!("stopped {}", parts.join(", "));
+                }
                 pause();
             }
             "5" => {

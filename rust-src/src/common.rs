@@ -26,14 +26,22 @@ pub fn home_dir() -> String {
 /// Instructs the OS kernel to ignore SIGPIPE (signal 13).
 /// In network servers and CLI tools, writing to a socket closed by the remote
 /// peer returns EPIPE instead of abruptly aborting the process with a signal.
+/// Signal handler type. Typed as a function pointer rather than `usize`
+/// because that is what the C ABI actually is, and a mismatched declaration
+/// is how a handler ends up jumping to an address it should not.
+#[cfg(unix)]
+type Sighandler = unsafe extern "C" fn(std::ffi::c_int);
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn signal(sig: std::ffi::c_int, handler: Sighandler) -> Sighandler;
+    fn kill(pid: std::ffi::c_int, sig: std::ffi::c_int) -> std::ffi::c_int;
+}
+
 #[cfg(unix)]
 pub fn ignore_sigpipe() {
     const SIGPIPE: std::ffi::c_int = 13;
-    // SIG_IGN = 1 on Darwin/Linux; typed as fn pointer, not usize.
-    type Sighandler = unsafe extern "C" fn(std::ffi::c_int);
-    unsafe extern "C" {
-        fn signal(sig: std::ffi::c_int, handler: Sighandler) -> Sighandler;
-    }
+    // SIG_IGN = 1 on Darwin/Linux.
     unsafe extern "C" fn ignore(_: std::ffi::c_int) {}
     unsafe {
         signal(SIGPIPE, ignore);
@@ -42,6 +50,81 @@ pub fn ignore_sigpipe() {
 
 #[cfg(not(unix))]
 pub fn ignore_sigpipe() {}
+
+// -------------------------------------------------------- child lifetime --
+
+/// The engine child's pid, published so a signal handler can reach it.
+///
+/// `spawn(...).status()` hands the child to `wait()` and gives back only an
+/// `ExitStatus`, so the parent has no handle left to signal. That is what let
+/// `kill -TERM <serve-mlx>` orphan `mlx_lm.server`: the wrapper died, the
+/// engine did not, it kept the port bound and ~16 GiB of weights resident,
+/// and the next start found the port taken, moved to 8082 and loaded a
+/// *second* copy of a 27B model. On the host this suite warns about at 32 GiB,
+/// that is the difference between serving and swapping — and nothing in the
+/// output said a duplicate had been created.
+static CHILD_PID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// Set by the signal handler so a supervising loop can stop retrying.
+static TERMINATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a termination signal has arrived. Loops check it and unwind
+/// normally, so destructors still run.
+pub fn terminating() -> bool {
+    TERMINATING.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+const SIGINT: std::ffi::c_int = 2;
+const SIGTERM: std::ffi::c_int = 15;
+
+#[cfg(unix)]
+extern "C" fn forward_terminate_to_child(sig: std::ffi::c_int) {
+    // Async-signal-safe only, and deliberately does not exit: `kill` is safe,
+    // `_exit` would skip every Drop and leave the port file advertising a lane
+    // that is now gone. Instead the child dies, the blocked `wait()` returns,
+    // and the loop unwinds through normal code where the guard runs.
+    let pid = CHILD_PID.load(std::sync::atomic::Ordering::SeqCst);
+    if pid > 0 {
+        unsafe { kill(pid, SIGTERM) };
+    }
+    TERMINATING.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = sig;
+}
+
+/// Route SIGTERM/SIGINT to the engine child, so stopping the wrapper stops
+/// the engine. Idempotent, and safe to call when there is no child yet.
+pub fn forward_terminate_to_child_process() {
+    #[cfg(unix)]
+    unsafe {
+        signal(SIGTERM, forward_terminate_to_child);
+        signal(SIGINT, forward_terminate_to_child);
+    }
+}
+
+/// Record the child so the signal handler can signal it, and clear it once
+/// the child is reaped so a later signal cannot hit a recycled pid.
+pub fn set_child_pid(pid: i32) {
+    CHILD_PID.store(pid, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn clear_child_pid() {
+    CHILD_PID.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Sleep, but wake early if a termination signal arrives. The retry loops
+/// sleep for up to 60s between launches; without this a `lac stop` during
+/// backoff would be ignored for the rest of the wait, and the engine would be
+/// relaunched after the operator asked for the lane to be down.
+pub fn sleep_unless_terminating(total: Duration) -> bool {
+    let deadline = Instant::now() + total;
+    while Instant::now() < deadline {
+        if terminating() {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50).min(total));
+    }
+    !terminating()
+}
 
 /// Project root: current dir when it holds opencode.jsonc, else derived
 /// from the executable path (target/release/<bin> -> up 3 = rust-src's
@@ -1213,5 +1296,52 @@ mod tests {
                 Err(e) => panic!("try_wait: {}", e),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod child_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    /// The invariant the whole child-lifetime block exists for: a published
+    /// pid is the one a handler will signal, and it is withdrawn the moment
+    /// the child is reaped so a later signal cannot land on a recycled pid.
+    #[test]
+    fn child_pid_is_published_and_withdrawn() {
+        set_child_pid(4242);
+        assert_eq!(CHILD_PID.load(Ordering::SeqCst), 4242);
+        clear_child_pid();
+        assert_eq!(
+            CHILD_PID.load(Ordering::SeqCst),
+            0,
+            "a stale pid must never outlive its child"
+        );
+        // Idempotent, and safe to install with no child present.
+        forward_terminate_to_child_process();
+        forward_terminate_to_child_process();
+    }
+
+    /// Backoff must be interruptible, or `lac stop` during a 60s wait is
+    /// ignored and the lane comes back after the operator asked for it down.
+    #[test]
+    fn sleep_returns_early_when_terminating() {
+        TERMINATING.store(false, Ordering::SeqCst);
+        let start = Instant::now();
+        assert!(sleep_unless_terminating(Duration::from_millis(200)));
+        assert!(start.elapsed() < Duration::from_secs(2), "overran the sleep");
+
+        TERMINATING.store(true, Ordering::SeqCst);
+        let start = Instant::now();
+        assert!(
+            !sleep_unless_terminating(Duration::from_secs(30)),
+            "must report that it was cut short"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "a 30s backoff must not survive a termination signal: {:?}",
+            start.elapsed()
+        );
+        TERMINATING.store(false, Ordering::SeqCst);
     }
 }

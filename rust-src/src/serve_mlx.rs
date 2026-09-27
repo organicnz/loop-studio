@@ -100,6 +100,10 @@ fn backoff_ms(attempt: u32) -> u64 {
     exp.min(BACKOFF_CAP_MS) + jitter_ms(attempt)
 }
 
+/// Launch the engine and wait for it, keeping the pid published so a
+/// termination signal can be forwarded to it. `status()` consumed the
+/// `Child` and returned only an `ExitStatus`, which left the parent with
+/// no handle to signal — the mechanism behind orphaned engines.
 fn spawn_server(model: &str, port: u16) -> std::io::Result<std::process::ExitStatus> {
     Command::new("mlx_lm.server")
         .arg("--model")
@@ -108,7 +112,13 @@ fn spawn_server(model: &str, port: u16) -> std::io::Result<std::process::ExitSta
         .arg("127.0.0.1")
         .arg("--port")
         .arg(port.to_string())
-        .status()
+        .spawn()
+        .and_then(|mut child| {
+            common::set_child_pid(child.id() as i32);
+            let status = child.wait();
+            common::clear_child_pid();
+            status
+        })
 }
 
 /// Set by the readiness prober the first time the engine answers HTTP.
@@ -191,7 +201,11 @@ fn daemon_retry_loop(model: String, port: u16) -> std::io::Error {
             ));
         }
         let wait = backoff_ms(crashes - 1);
-        std::thread::sleep(Duration::from_millis(wait));
+        if !common::sleep_unless_terminating(Duration::from_millis(wait)) {
+            // A signal arrived during backoff. Do not relaunch: the
+            // operator asked for this lane to be down.
+            return std::io::Error::other("terminated while backing off");
+        }
     }
 }
 
@@ -201,6 +215,7 @@ fn which(cmd: &str) -> bool {
 
 fn main() {
     common::ignore_sigpipe();
+    common::forward_terminate_to_child_process();
     eprintln!("=== LAC serve-mlx v2.7 (Rust, port-aware, auto-restart daemon) ===");
 
     if !common::mlx_supported() && std::env::var("LAC_ALLOW_MLX").unwrap_or_default() != "1" {
