@@ -209,6 +209,13 @@ fn serve_menu(root: &str) {
                 // that still holds the port and the weights. The engine sweep
                 // afterwards is belt and braces for anything not owned by a
                 // wrapper, such as an engine someone started by hand.
+                //
+                // `kill_matching` matches on program identity, not on the
+                // pattern appearing anywhere in the command line. It used to
+                // do the latter, so pressing 4 while `tail -f
+                // ~/Library/Logs/lac-serve-mlx.err` was open — a log path
+                // this project prints itself — killed the reader, and the
+                // count below reported it as an engine stopped.
                 let mut parts = Vec::new();
                 for pattern in ["serve-mlx", "serve-llama"] {
                     let killed = common::kill_matching(pattern);

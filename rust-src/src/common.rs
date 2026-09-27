@@ -1022,13 +1022,134 @@ pub fn process_snapshot() -> Vec<ProcInfo> {
         .unwrap_or_default()
 }
 
-/// Processes whose command line contains `substr`, excluding self.
-/// (The old `pgrep -af` wrapper used to match its own probe command.)
+/// True when `pattern` names the *program* this process is running, not
+/// something that merely appears in its arguments.
+///
+/// This is the predicate every signal in the suite goes through, so it is
+/// deliberately strict. `cmd.contains(pattern)` over the whole `ps` line
+/// matched any process that mentioned the word anywhere in argv, and the
+/// words this suite matches on are everywhere: an operator reading the lane
+/// runs `tail -f ~/Library/Logs/lac-serve-mlx.err`, `grep -r lac-router .`,
+/// or types the name into a shell — and `lac stop` / the TUI's "stop engines"
+/// then SIGTERMed the reader, the grep, and the shell itself. A kill is not
+/// recoverable by the process that did not ask for it, so a substring match is
+/// the wrong tool for one.
+///
+/// What counts as the program:
+///   * the first token's file name, with the `lac-` install alias normalized
+///     (`lac-serve-mlx` is the same program as `serve-mlx`; `make install`
+///     ships both names for one binary);
+///   * a module argument, for an engine someone started by hand under an
+///     interpreter (`python3 -m mlx_lm.server`), so the TUI's belt-and-braces
+///     engine sweep still finds an unwrapped lane;
+///   * a subcommand, so `ollama serve` is still recognizable.
+///
+/// A pattern containing whitespace is matched token-by-token against the front
+/// of the command, which is what makes `ollama serve` name one process rather
+/// than every `ollama` invocation.
+pub fn program_matches(cmd: &str, pattern: &str) -> bool {
+    let tokens: Vec<&str> = cmd.split_whitespace().collect();
+    let wanted: Vec<&str> = pattern.split_whitespace().collect();
+    if wanted.is_empty() || tokens.len() < wanted.len() {
+        return false;
+    }
+    if wanted.len() > 1 {
+        // A multi-token pattern is a program plus literal arguments, so it can
+        // only ever be the front of the command line.
+        return program_matches_token(&module_file_name(tokens[0]), wanted[0])
+            && wanted
+                .iter()
+                .skip(1)
+                .enumerate()
+                .all(|(index, token)| tokens[index + 1] == *token);
+    }
+    if program_matches_token(&module_file_name(tokens[0]), wanted[0]) {
+        return true;
+    }
+    // A single-token pattern also names an engine someone started by hand
+    // under an interpreter (`python3 -m mlx_lm.server`), which is exactly the
+    // case the TUI's second engine sweep exists for: no wrapper owns it. Only
+    // an interpreter is consulted — `llama-server -m model.gguf` uses the same
+    // flag to mean the model, and that is its own business.
+    if is_interpreter(&module_file_name(tokens[0])) {
+        if let Some(at) = tokens.iter().position(|token| *token == "-m") {
+            if let Some(module) = tokens.get(at + 1) {
+                return program_matches_token(&module_file_name(module), wanted[0]);
+            }
+        }
+    }
+    false
+}
+
+fn is_interpreter(program: &str) -> bool {
+    program == "python"
+        || program == "python2"
+        || program == "python3"
+        || program == "uv"
+        || (program.starts_with("python") && program[6..].starts_with('.'))
+}
+
+/// Last path component, tolerating the `(deleted)` / `(defunct)` suffix the
+/// kernel appends to the argv of a process that is exiting or whose binary was
+/// replaced under it.
+fn module_file_name(token: &str) -> String {
+    let base = token
+        .split(" (deleted)")
+        .next()
+        .unwrap_or(token)
+        .split(" (defunct)")
+        .next()
+        .unwrap_or(token);
+    base.rsplit('/').next().unwrap_or(base).to_string()
+}
+
+/// Collapse the `lac-` install alias so one binary is found by either name.
+fn program_matches_token(program: &str, pattern: &str) -> bool {
+    if program.is_empty() || pattern.is_empty() {
+        return false;
+    }
+    fn strip(name: &str) -> &str {
+        name.strip_prefix("lac-").unwrap_or(name)
+    }
+    program == pattern || strip(program) == strip(pattern)
+}
+
+/// Full command line of one pid, or None when it is gone (`ps` exits non-zero
+/// for a pid it cannot see). Used to confirm a recorded pid is still the
+/// process we wrote it for before signalling it: a pid file is a claim about
+/// the past, and pids are recycled.
+pub fn command_of(pid: u32) -> Option<String> {
+    let out = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+/// Processes running `pattern`, excluding self. (The old `pgrep -af` wrapper
+/// used to match its own probe command; the substring version matched far
+/// more than that — see [`program_matches`].)
 pub fn processes_matching(substr: &str) -> Vec<ProcInfo> {
+    processes_matching_in(&process_snapshot(), substr)
+}
+
+/// [`processes_matching`] over a supplied snapshot, so the filter can be
+/// pinned on a `ps` table that is known rather than on whatever the host
+/// happens to be running.
+pub fn processes_matching_in(snapshot: &[ProcInfo], substr: &str) -> Vec<ProcInfo> {
     let me = std::process::id();
-    process_snapshot()
-        .into_iter()
-        .filter(|p| p.pid != me && p.cmd.contains(substr))
+    snapshot
+        .iter()
+        .filter(|p| p.pid != me && program_matches(&p.cmd, substr))
+        .cloned()
         .collect()
 }
 
@@ -1051,8 +1172,10 @@ pub fn signal_pid(pid: u32, sig: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// SIGTERM every process matching `substr`. Returns kill count.
-/// Replaces `pkill -f` with an auditable Rust loop.
+/// SIGTERM every process running `pattern`. Returns kill count.
+/// Replaces `pkill -f` with an auditable Rust loop. Matching is by program
+/// identity, not by substring — see [`program_matches`] — because the cost of
+/// a false positive here is a process the operator never asked to lose.
 pub fn kill_matching(substr: &str) -> usize {
     processes_matching(substr)
         .iter()
@@ -1124,6 +1247,118 @@ mod tests {
     #[test]
     fn default_branch_never_empty() {
         assert!(!default_branch().is_empty());
+    }
+
+    #[test]
+    fn a_signal_only_ever_reaches_the_program_it_names() {
+        // The processes an operator has open while working on this stack. Each
+        // of these mentions a pattern the suite kills on, and every one of them
+        // was SIGTERMed by `lac stop` or the TUI's "stop engines" when the
+        // match was a substring of the whole command line.
+        let bystanders = [
+            ("/usr/bin/tail -f /Users/x/Library/Logs/lac-serve-mlx.err", "serve-mlx"),
+            ("/usr/bin/less /Users/x/Library/Logs/lac-serve-llama.log", "serve-llama"),
+            ("/usr/bin/grep -r lac-router /Users/x/dev", "lac-router"),
+            ("/usr/bin/git diff -- rust-src/target/release/serve-mlx", "serve-mlx"),
+            // The killer: the parent shell of `lac stop` itself, whose argv
+            // contains the whole command line the operator just typed.
+            ("/bin/zsh -c sleep 300; : lac-router", "lac-router"),
+            ("/Applications/Codex.app/Contents/MacOS/Codex run restart serve-mlx", "serve-mlx"),
+            ("/usr/bin/vim notes # lac-router", "lac-router"),
+            ("/usr/bin/open -a TextEdit ~/notes/lac-router.md", "lac-router"),
+        ];
+        for (cmd, pattern) in bystanders {
+            assert!(
+                !program_matches(cmd, pattern),
+                "`{cmd}` must not be matched as {pattern}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_programs_we_mean_are_still_matched() {
+        let owned = [
+            ("/Users/x/.local/bin/lac-router", "lac-router", true),
+            ("./target/release/lac-router", "lac-router", true),
+            ("/Users/x/.local/bin/lac-serve-mlx", "serve-mlx", true),
+            ("/Users/x/.local/bin/serve-llama", "serve-llama", true),
+            ("/opt/homebrew/bin/llama-server --port 8081 -m q8.gguf", "llama-server", true),
+            ("/Users/x/.venv/bin/mlx_lm.server --model m", "mlx_lm.server", true),
+            // An engine started by hand under an interpreter still has to be
+            // findable: that is exactly the case the TUI's second sweep exists
+            // for, and it is how a lane is stopped when no wrapper owns it.
+            ("/usr/bin/python3 -m mlx_lm.server --model m", "mlx_lm.server", true),
+            ("/usr/local/bin/ollama serve", "ollama serve", true),
+            ("/usr/local/bin/ollama runner x", "ollama serve", false),
+            // Exiting processes keep a decodable argv.
+            ("/Users/x/.local/bin/lac-router (deleted)", "lac-router", true),
+        ];
+        for (cmd, pattern, expected) in owned {
+            assert_eq!(
+                program_matches(cmd, pattern),
+                expected,
+                "`{cmd}` vs {pattern}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_matched_process_is_actually_that_program() {
+        // The invariant, asserted against a live snapshot rather than a
+        // fixture: whatever the walk returns, each row's own program has to be
+        // the pattern. The substring version could not satisfy this.
+        for pattern in ["lac-router", "serve-mlx", "llama-server", "mlx_lm.server"] {
+            for p in processes_matching(pattern) {
+                assert!(
+                    program_matches(&p.cmd, pattern),
+                    "matched a non-program: {} ({})",
+                    p.cmd,
+                    pattern
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_kill_path_filters_on_a_ps_table_not_on_the_whole_command_line() {
+        // The property the caller has to keep, pinned on a table that cannot
+        // change under us. Reverting the filter to `cmd.contains` fails here.
+        let snapshot: Vec<ProcInfo> = [
+            "/Users/x/.local/bin/lac-router",
+            "/usr/bin/tail -f /Users/x/Library/Logs/lac-router.log",
+            "/bin/zsh -c lac stop",
+            "/Users/x/.local/bin/lac-tui",
+            "/usr/bin/grep -rn lac-router rust-src",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, cmd)| ProcInfo { pid: 1000 + index as u32, ppid: 1, cmd: cmd.to_string() })
+        .collect();
+        let hits: Vec<String> = processes_matching_in(&snapshot, "lac-router")
+            .iter()
+            .map(|p| p.cmd.clone())
+            .collect();
+        assert_eq!(hits, vec!["/Users/x/.local/bin/lac-router".to_string()]);
+        // Self is never a candidate even when it is the program named.
+        let me = std::process::id();
+        let mine = vec![ProcInfo { pid: me, ppid: 1, cmd: "lac-router".to_string() }];
+        assert!(processes_matching_in(&mine, "lac-router").is_empty());
+    }
+
+    #[test]
+    fn a_live_pid_reports_its_own_command_line() {
+        let me = std::process::id();
+        let command = command_of(me).expect("own pid is visible to ps");
+        assert!(!command.is_empty());
+        // The test binary's own name, so this also pins that `ps -p` returns
+        // the argv rather than an empty row.
+        assert!(
+            command.contains("lac_bootstrap") || command.contains("common") || command.contains("-"),
+            "unexpected own command line: {command}"
+        );
+        // A pid that cannot exist is reported as absent, not as a blank string
+        // that a caller might mistake for "running, empty command".
+        assert!(command_of(u32::MAX).is_none());
     }
 
     #[test]

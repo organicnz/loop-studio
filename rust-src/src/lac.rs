@@ -2908,18 +2908,45 @@ fn cmd_stop() {
         if let Ok(pid) = fs::read_to_string(&pf) {
             let pid = pid.trim().to_string();
             if !pid.is_empty() {
-                let ok = pid
+                // A pid file is a claim about the past. Pids are recycled and
+                // the file survives a crash, a reboot, or a `lac route` that
+                // exited and left it behind — so before TERM goes out, confirm
+                // the pid is still the program we recorded. Signalling a
+                // stranger's pid reports "signaled" for a router that was
+                // never there, and takes down whatever is actually running.
+                let identity = pid
                     .parse::<u32>()
-                    .map(|p| common::signal_pid(p, "TERM"))
-                    .unwrap_or(false);
-                println!("  {} pid {}: {}", label, pid, if ok { "signaled" } else { "not running" });
+                    .ok()
+                    .and_then(common::command_of)
+                    .unwrap_or_default();
+                if identity.is_empty() {
+                    println!("  {} pid {}: not running", label, pid);
+                } else if !common::program_matches(&identity, label) {
+                    println!(
+                        "  {} pid {}: left alone — that pid is `{}`, not a {}",
+                        label,
+                        pid,
+                        common::head_lines(&identity, 1),
+                        label
+                    );
+                    // The file stays: it is the evidence, and the pid it names
+                    // may be the router again after a reboot reuses the slot.
+                    continue;
+                } else {
+                    let ok = common::signal_pid(pid.parse::<u32>().unwrap_or(0), "TERM");
+                    println!("  {} pid {}: {}", label, pid, if ok { "signaled" } else { "signal failed" });
+                }
             }
+            // Removed only once the recorded pid is gone or was ours to signal.
+            // A concurrent `lac route --daemon` may have just written this
+            // file, and deleting its pid out from under it would strand the
+            // router it is supervising.
             let _ = fs::remove_file(&pf);
         }
     }
-    // Fallback: pattern kill for anything lac started (native ps walk).
+    // Fallback: program-identity kill for a router started without a pid file.
     let n = common::kill_matching("lac-router");
-    println!("  lac-router pattern kill: {} process(es) signaled", n);
+    println!("  lac-router process sweep: {} signaled", n);
     println!("Note: inference engines (mlx/llama/ollama) left running; stop them via the TUI serve menu or brew services.");
 }
 
@@ -2932,7 +2959,7 @@ fn cmd_ps() {
         "serve-mlx",
         "serve-llama",
         "llama-server",
-        "mlx_lm",
+        "mlx_lm.server",
         "ollama serve",
     ] {
         for p in common::processes_matching(pat) {
