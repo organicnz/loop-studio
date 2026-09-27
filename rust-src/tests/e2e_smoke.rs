@@ -439,6 +439,36 @@ fn process_level_gateway_and_cli_smoke() {
     );
     drop(token_router);
 
+    // A loop that simulates its phases must not retire a real task, and a gate
+    // that did not run must not read as a pass. Both used to be the other way
+    // round: `--dry-run` printed "✓ Tests passed (100% pass rate)" with no
+    // cargo in the process, then rewrote the queue to `status: complete`, so
+    // `lac worker` would never pick the task up again.
+    let queue = home.join("todo/lac-tasks.yaml");
+    std::fs::create_dir_all(queue.parent().expect("queue parent")).expect("queue directory");
+    std::fs::write(
+        &queue,
+        "- id: \"t-dry\"\n  task: \"REAL WORK: keep this pending\"\n  status: pending\n",
+    )
+    .expect("queue fixture");
+    let (ok, output) = run_cli(
+        &lac,
+        &home,
+        &["loop", "run", "t-dry", "--dry-run"],
+        &[("LAC_ROUTER_PORT", "0")],
+    );
+    assert!(!ok, "a gate that never ran must not exit 0: {output}");
+    assert!(
+        !output.contains("Tests passed"),
+        "a dry run must not report a test result: {output}"
+    );
+    assert!(output.contains("GATE REJECTED"), "{output}");
+    let after = std::fs::read_to_string(&queue).expect("queue readable");
+    assert!(
+        after.contains("status: pending"),
+        "a simulation must leave the task in the queue: {after}"
+    );
+
     drop(fixture);
     let _ = std::fs::remove_dir_all(home);
 }

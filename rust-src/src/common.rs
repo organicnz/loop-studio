@@ -248,6 +248,38 @@ pub fn retarget_launchd_plist(content: &str, home: &str, root: &str, want_bin: &
     out
 }
 
+/// Set the `<string>` value that follows `<key>KEY</key>` in a plist, whatever
+/// the indentation. Returns `None` when the key is not there, so a caller can
+/// tell "retargeted" from "silently did nothing".
+///
+/// This exists because the router port was being rewritten with a literal
+/// `"<key>LAC_ROUTER_PORT</key>\n    <string>8000</string>"`, and the shipped
+/// template indents its `<string>` by eight spaces. The replace never matched,
+/// `LAC_ROUTER_PORT=9000 lac daemon install` printed `[ok] Placed:`, and the
+/// launchd router bound 8000 while every `lac` command addressed 9000 — so the
+/// whole CLI reported the gateway down. A plist is XML with no significant
+/// whitespace; matching on it is how that stayed invisible.
+pub fn set_plist_string(content: &str, key: &str, value: &str) -> Option<String> {
+    let needle = format!("<key>{key}</key>");
+    let k = content.find(&needle)?;
+    let after = k + needle.len();
+    // The value must belong to *this* key, so the search stops at the next
+    // one. A key whose value is not a string (`<true/>`, a nested `<dict>`) is
+    // reported rather than answered with whatever `<string>` comes later in the
+    // file.
+    let end = content[after..]
+        .find("<key>")
+        .map(|i| after + i)
+        .unwrap_or(content.len());
+    let region = &content[after..end];
+    let s0 = region.find("<string>")? + after;
+    let open = s0 + "<string>".len();
+    let close = content[open..end].find("</string>")? + open;
+    let mut out = content.to_string();
+    out.replace_range(open..close, value);
+    Some(out)
+}
+
 // ---------------------------------------------------------------- memory --
 
 /// OS page size via `sysctl hw.pagesize`; Apple Silicon fallback 16384.
@@ -966,18 +998,43 @@ pub fn serve_ram_tiers_gib() -> (f64, f64) {
 }
 
 /// Last `n` lines of a file (trailing newline normalized). Replaces
-/// `tail -n` with zero subprocesses; fine for log-sized files.
+/// `tail -n` with zero subprocesses.
+///
+/// Seeks from the end and reads a bounded tail, growing the window only if the
+/// last `n` lines have not been seen yet. The old version was `fs::read` of the
+/// whole file: fine for a config file, not for the one caller, which is
+/// `lac logs` over `~/Library/Logs/lac-router.log` — a launchd
+/// `StandardOutPath` that launchd never rotates and that the router appends
+/// one line per request and per attempt to. Measured at 95 MiB of RSS to print
+/// 100 lines, and unbounded from there: a busy week is multiple GB, read into
+/// memory by a foreground CLI.
 pub fn tail_file(path: &str, n: usize) -> Option<String> {
-    let bytes = fs::read(path).ok()?;
-    let text = String::from_utf8_lossy(&bytes);
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.is_empty() {
-        return Some(String::new());
+    use std::io::{Read, Seek, SeekFrom};
+    let want = n.max(1);
+    let mut file = fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    // Start with a window that comfortably holds `want` lines, then double
+    // until the count is satisfied or the whole file has been read.
+    let mut window = 64 * 1024u64;
+    loop {
+        let start = len.saturating_sub(window);
+        let mut buf = Vec::with_capacity((len - start) as usize);
+        file.seek(SeekFrom::Start(start)).ok()?;
+        file.read_to_end(&mut buf).ok()?;
+        let text = String::from_utf8_lossy(&buf);
+        let lines: Vec<&str> = text.lines().collect();
+        // A partial first line (the seek landed mid-line) is dropped unless we
+        // read the file from the beginning.
+        let skipped = if start > 0 && !lines.is_empty() { 1 } else { 0 };
+        let available = lines.len().saturating_sub(skipped);
+        if available >= want || start == 0 {
+            let begin = lines.len().saturating_sub(want);
+            let mut out = lines[begin..].join("\n");
+            out.push('\n');
+            return Some(out);
+        }
+        window = window.saturating_mul(2);
     }
-    let start = lines.len().saturating_sub(n.max(1));
-    let mut out = lines[start..].join("\n");
-    out.push('\n');
-    Some(out)
 }
 
 /// First `n` lines of a string. Replaces `| head -N` in display paths.
@@ -1466,6 +1523,29 @@ mod tests {
     }
 
     #[test]
+    fn a_plist_value_is_matched_by_key_not_by_its_whitespace() {
+        // The shape of launchd/org.lac.router.plist: the <string> under a
+        // nested <dict> is indented by eight, not four.
+        let router = "<key>EnvironmentVariables</key>\n    <dict>\n        <key>LAC_ROUTER_PORT</key>\n        <string>8000</string>\n        <!-- note -->\n    </dict>";
+        let out = set_plist_string(router, "LAC_ROUTER_PORT", "9000")
+            .expect("the key is present, so this must retarget");
+        assert!(out.contains("<key>LAC_ROUTER_PORT</key>"), "{out}");
+        assert!(out.contains("<string>9000</string>"), "{out}");
+        assert!(!out.contains("8000"), "{out}");
+        // The literal-whitespace replace this replaced, for the record.
+        assert!(router.replace(
+            "<key>LAC_ROUTER_PORT</key>\n    <string>8000</string>",
+            "<key>LAC_ROUTER_PORT</key>\n    <string>9000</string>"
+        ) == router, "the old needle never matched the shipped template");
+        // A key that is not there is reported, not silently ignored.
+        assert!(set_plist_string(router, "LAC_MISSING_KEY", "1").is_none());
+        // A key with no string value is reported too, rather than rewriting
+        // whatever `<string>` happens to come later in the file.
+        let no_value = "<key>KeepAlive</key>\n    <true/>\n    <key>Other</key>\n    <string>keep</string>";
+        assert!(set_plist_string(no_value, "KeepAlive", "false").is_none());
+    }
+
+    #[test]
     fn which_finds_shell_and_rejects_ghosts() {
         let sh = which("sh");
         assert!(sh.is_some(), "sh must resolve via PATH");
@@ -1488,6 +1568,36 @@ mod tests {
         assert!(tail_file("/nonexistent/lac-tail-xyz", 10).is_none());
         let _ = fs::remove_file(&p);
         assert_eq!(head_lines("a\nb\nc", 2), "a\nb");
+    }
+
+    /// The tail has to come off the end of a file that grows without limit, so
+    /// the read is bounded by the window rather than by the file. Asserted by
+    /// content (a big file, an exact answer) and by construction: a 64 MiB file
+    /// whose 100th-from-last line is the very first one, so the window has to
+    /// grow, and the result must still be right.
+    #[test]
+    fn tail_of_a_huge_file_reads_a_window_not_the_file() {
+        let p = format!(
+            "{}/lac-test-tail-big-{}.log",
+            std::env::temp_dir().to_string_lossy(),
+            std::process::id()
+        );
+        let filler = "x".repeat(1023);
+        let mut file = fs::File::create(&p).unwrap();
+        // 64 MiB of 1 KiB lines, then the two lines the answer is made of.
+        for _ in 0..(64 * 1024) {
+            use std::io::Write as _;
+            writeln!(file, "{}", filler).unwrap();
+        }
+        use std::io::Write as _;
+        writeln!(file, "the-answer-line").unwrap();
+        writeln!(file, "the-last-line").unwrap();
+        drop(file);
+        let size = fs::metadata(&p).unwrap().len();
+        assert!(size > 64 * 1024 * 1024, "fixture is {} bytes", size);
+        let out = tail_file(&p, 2).expect("tail");
+        assert_eq!(out, "the-answer-line\nthe-last-line\n");
+        let _ = fs::remove_file(&p);
     }
 
     #[test]

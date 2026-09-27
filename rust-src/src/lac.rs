@@ -379,10 +379,29 @@ fn cmd_code(root: &str, args: &[String]) {
                         }
                         if write_mode {
                             let bak = format!("{}.bak", path);
-                            let _ = fs::write(&bak, orig);
+                            // The backup is not decoration: it is the only copy
+                            // of the original once the write lands. It used to
+                            // be `let _ =`, so an unwritable backup path (a
+                            // directory, a read-only mount) was swallowed and
+                            // the CLI went on to print "(backup saved to …)"
+                            // pointing at something that was not a backup. If
+                            // it cannot be written, the original is not
+                            // touched.
+                            if let Err(e) = fs::write(&bak, orig) {
+                                eprintln!(
+                                    "Refusing to overwrite {}: no backup could be written ({}): {}",
+                                    path, bak, e
+                                );
+                                std::process::exit(1);
+                            }
                             match fs::write(path, &extracted) {
                                 Ok(_) => println!("✓ Refactored code written to {} (backup saved to {})", path, bak),
-                                Err(e) => eprintln!("Failed writing to {}: {}", path, e),
+                                Err(e) => {
+                                    // Nonzero, so `lac code --write … && next`
+                                    // does not proceed as if the refactor landed.
+                                    eprintln!("Failed writing to {}: {}", path, e);
+                                    std::process::exit(1);
+                                }
                             }
                         }
                     } else {
@@ -416,6 +435,19 @@ fn cmd_code(root: &str, args: &[String]) {
 
 // ---------------------------------------------------------------- dashboard ---
 
+/// Whether two paths are the same file, following symlinks. Used to refuse a
+/// copy onto its own source: `fs::copy` truncates the destination before it
+/// reads, so a self-copy is a delete, and it reports success.
+fn same_file(a: &str, b: &str) -> bool {
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        // A destination that does not exist yet cannot be the source; neither
+        // can the source be the destination if the source itself is unreadable.
+        (Ok(_), Err(_)) | (Err(_), Ok(_)) => false,
+        (Err(_), Err(_)) => a == b,
+    }
+}
+
 fn cmd_dashboard(root: &str, args: &[String]) {
     if args.iter().any(|a| a == "--install") {
         let built_lac_studio = format!("{}/SwiftUI/.build/debug/LACStudio", root);
@@ -433,19 +465,45 @@ fn cmd_dashboard(root: &str, args: &[String]) {
             std::process::exit(1);
         }
         let dir = format!("{}/.local/bin", common::home_dir());
-        let _ = fs::create_dir_all(&dir);
+        if let Err(e) = fs::create_dir_all(&dir) {
+            eprintln!("Install failed: cannot create {}: {}", dir, e);
+            std::process::exit(1);
+        }
         let dst_lac = format!("{}/LACStudio", dir);
         let dst_loop = format!("{}/LoopLACStudio", dir);
         let dst_dash = format!("{}/LACDashboard", dir);
-        let _ = fs::copy(&src, &dst_lac);
-        let _ = fs::copy(&src, &dst_loop);
-        match fs::copy(&src, &dst_dash) {
-            Ok(_) => println!("Installed LAC Studio → {} (launch with `lac studio`, `lac visualize`, or `lac dashboard`)", dst_lac),
-            Err(e) => {
-                eprintln!("Install failed: {}", e);
-                std::process::exit(1);
+        // `fs::copy(x, x)` is not a no-op: it opens the destination O_TRUNC and
+        // returns `Ok(0)`, so pointing LAC_STUDIO at one of the three
+        // destinations — the documented "here is my installed copy" use of the
+        // variable — destroyed all three binaries and printed "Installed".
+        // Reproduced: 40 bytes in, 0 bytes out, three green checkmarks.
+        //
+        // Every copy is now checked, and the size is compared, because a copy
+        // that reports success and writes nothing is the same failure wearing a
+        // success message.
+        let source_len = fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
+        let mut failures: Vec<String> = Vec::new();
+        for dst in [&dst_lac, &dst_loop, &dst_dash] {
+            if same_file(&src, dst) {
+                failures.push(format!(
+                    "{} is the source (LAC_STUDIO/LAC_DASHBOARD names a destination) — refusing to copy it onto itself",
+                    dst
+                ));
+                continue;
+            }
+            match fs::copy(&src, dst) {
+                Ok(n) if n == source_len => {}
+                Ok(n) => failures.push(format!("{}: wrote {n} of {source_len} bytes", dst)),
+                Err(e) => failures.push(format!("{}: {}", dst, e)),
             }
         }
+        if !failures.is_empty() {
+            for failure in &failures {
+                eprintln!("Install failed: {}", failure);
+            }
+            std::process::exit(1);
+        }
+        println!("Installed LAC Studio → {} (launch with `lac studio`, `lac visualize`, or `lac dashboard`)", dst_lac);
         return;
     }
     cmd_visualize(root);
@@ -1177,7 +1235,12 @@ fn probe_chat(port: u16, read_timeout: Duration, opts: ProbeOpts) -> Option<Prob
                 if ttft.is_none() {
                     ttft = Some(t_inf.elapsed());
                 }
-                inf_resp.extend_from_slice(&chunk[..n]);
+                // Bounded: a peer that keeps talking must not grow this
+                // without limit for the length of the 300 s window.
+                if (inf_resp.len() as u64) < HTTP_PROBE_CAP {
+                    let room = (HTTP_PROBE_CAP - inf_resp.len() as u64) as usize;
+                    inf_resp.extend_from_slice(&chunk[..n.min(room)]);
+                }
             }
             Err(_) => break,
         }
@@ -1196,6 +1259,14 @@ fn probe_chat(port: u16, read_timeout: Duration, opts: ProbeOpts) -> Option<Prob
     })
 }
 
+/// A probe of a lane that answers HTTP must finish or fail inside this. The
+/// point is that "listening but silent" is a state a CLI has to be able to
+/// report, not one it can sit in.
+const BENCH_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Ceiling on a probe's response accumulation, matching `common::http_get`.
+const HTTP_PROBE_CAP: u64 = 4 * 1024 * 1024;
+
 fn cmd_bench(port: u16, args: &[String]) {
     let opts = parse_probe_opts(args);
     println!(
@@ -1212,12 +1283,26 @@ fn cmd_bench(port: u16, args: &[String]) {
             let req = format!("GET /v1/models HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", addr);
             let t0 = Instant::now();
             let _ = stream.write_all(req.as_bytes());
+            // This socket had no read timeout and an unbounded `read_to_end`.
+            // Against anything that accepts and then says nothing — an ssh
+            // tunnel, a docker-proxy port, a half-dead server — `lac bench`
+            // never returned: no output, no error, no exit. And a peer that
+            // streams instead of stalling grew `resp` for as long as it liked.
+            let _ = stream.set_read_timeout(Some(BENCH_HTTP_TIMEOUT));
+            let _ = stream.set_write_timeout(Some(BENCH_HTTP_TIMEOUT));
             let mut resp = Vec::new();
-            let _ = stream.read_to_end(&mut resp);
+            let read = (&mut stream).take(HTTP_PROBE_CAP).read_to_end(&mut resp);
             println!(
                 "  - Socket roundtrip (TTFB): {:.2} ms",
                 t0.elapsed().as_secs_f64() * 1000.0
             );
+            if read.is_err() && resp.is_empty() {
+                eprintln!(
+                    "  [x] No response from :{} within {:?} — the port is listening but not answering HTTP.",
+                    port, BENCH_HTTP_TIMEOUT
+                );
+                std::process::exit(1);
+            }
             let resp_str = String::from_utf8_lossy(&resp);
             let status = resp_str.lines().next().unwrap_or("Unknown");
             println!("  - Health Status: {}", status);
@@ -1243,7 +1328,11 @@ fn cmd_bench(port: u16, args: &[String]) {
             }
         }
         None => {
-            println!("  [x] Connection failed to port {}. Service is offline.", port);
+            // A bench that could not reach the lane is a failure, not a
+            // result: this used to print the failure and exit 0, so a bench
+            // script passed on a dead port.
+            eprintln!("  [x] Connection failed to port {}. Service is offline.", port);
+            std::process::exit(1);
         }
     }
 }
@@ -1433,27 +1522,53 @@ fn cmd_loop(root: &str, args: &[String]) {
     match sub {
         "init" => {
             println!("Initializing ~/todo/lac-loops and ~/todo/lac-tasks.yaml ...");
-            let _ = fs::create_dir_all(&loops_dir);
+            // Every copy is checked and only the ones that landed are named.
+            // This is the worker's pre-flight, so a "successful" init that
+            // installed nothing left `lac worker` looping on a no-op forever
+            // (or, in --drain mode, exiting 0 having drained nothing).
+            let mut failures: Vec<String> = Vec::new();
+            if let Err(e) = fs::create_dir_all(&loops_dir) {
+                eprintln!("  [x] Cannot create {}: {}", loops_dir, e);
+                std::process::exit(1);
+            }
             let templates_dir = format!("{}/templates/loops", root);
             // Never overwrite user-edited loops: only install missing files.
-            if let Ok(entries) = fs::read_dir(&templates_dir) {
-                for entry in entries.flatten() {
-                    let dest = format!("{}/{}", loops_dir, entry.file_name().to_string_lossy());
-                    if fs::metadata(&dest).is_ok() {
-                        println!("  Keeping existing loop: {}", dest);
-                    } else {
-                        let _ = fs::copy(entry.path(), &dest);
-                        println!("  Installed loop template: {}", dest);
+            match fs::read_dir(&templates_dir) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        let dest = format!("{}/{}", loops_dir, entry.file_name().to_string_lossy());
+                        if fs::metadata(&dest).is_ok() {
+                            println!("  Keeping existing loop: {}", dest);
+                        } else {
+                            match fs::copy(entry.path(), &dest) {
+                                Ok(n) if n > 0 => println!("  Installed loop template: {}", dest),
+                                Ok(_) => failures.push(format!("{}: copy wrote nothing", dest)),
+                                Err(e) => failures.push(format!("{}: {}", dest, e)),
+                            }
+                        }
                     }
                 }
+                Err(e) => failures.push(format!("cannot read {}: {}", templates_dir, e)),
             }
             let task_template = format!("{}/templates/tasks/lac-tasks.yaml", root);
             let task_dest = common::tasks_file();
-            if fs::metadata(&task_dest).is_err() && fs::metadata(&task_template).is_ok() {
-                let _ = fs::copy(&task_template, &task_dest);
-                println!("  Installed task queue: {}", task_dest);
-            } else {
+            if fs::metadata(&task_dest).is_ok() {
                 println!("  Keeping existing task queue: {}", task_dest);
+            } else if fs::metadata(&task_template).is_err() {
+                failures.push(format!("no task template at {}", task_template));
+            } else {
+                match fs::copy(&task_template, &task_dest) {
+                    Ok(n) if n > 0 => println!("  Installed task queue: {}", task_dest),
+                    Ok(_) => failures.push(format!("{}: copy wrote nothing", task_dest)),
+                    Err(e) => failures.push(format!("{}: {}", task_dest, e)),
+                }
+            }
+            if !failures.is_empty() {
+                for failure in &failures {
+                    eprintln!("  [x] {}", failure);
+                }
+                eprintln!("Loop system NOT initialized.");
+                std::process::exit(1);
             }
             println!("Loop system initialized successfully.");
         }
@@ -1533,13 +1648,66 @@ fn cmd_loop(root: &str, args: &[String]) {
         "run" => {
             let dry_run = args.iter().any(|a| a == "--dry-run");
             let target = args.iter().skip(1).find(|a| !a.starts_with("--")).map(|s| s.as_str());
-            cmd_loop_run(root, target, dry_run);
+            let code = cmd_loop_run(root, target, dry_run);
+            if code != 0 {
+                std::process::exit(code);
+            }
         }
         _ => println!("Unknown loop subcommand. Use: init, list, validate, run"),
     }
 }
 
-fn cmd_loop_run(root: &str, target: Option<&str>, dry_run: bool) {
+/// The gate verdict for one run, decided once and printed from.
+struct TestGate {
+    /// `cargo test` was actually run and passed.
+    passed: bool,
+    /// One line saying what did or did not happen, for the operator.
+    detail: String,
+}
+
+/// Decide the test gate for a run. Every branch states what it did.
+///
+/// This used to have an `else` that printed `✓ Tests passed (100% pass rate)`
+/// — the branch taken by `--dry-run` and by every checkout without
+/// `rust-src/Cargo.toml`. So the one path that never ran a test was the path
+/// that claimed a perfect score, and the gate then reported
+/// `Reliability gates passed` on the strength of it.
+fn run_test_gate(root: &str, dry_run: bool) -> TestGate {
+    let manifest = format!("{}/rust-src/Cargo.toml", root);
+    if dry_run {
+        return TestGate {
+            passed: false,
+            detail: "not run — --dry-run performs no test run".to_string(),
+        };
+    }
+    if fs::metadata(&manifest).is_err() {
+        return TestGate {
+            passed: false,
+            detail: format!("not run — {manifest} is not here, so there is no suite to gate on"),
+        };
+    }
+    print!("  Running cargo test... ");
+    let _ = io::stdout().flush();
+    match Command::new("cargo")
+        .args(["test", "--manifest-path", &manifest])
+        .output()
+    {
+        Ok(s) if s.status.success() => TestGate {
+            passed: true,
+            detail: "cargo test: passed".to_string(),
+        },
+        Ok(s) => TestGate {
+            passed: false,
+            detail: format!("cargo test: failed ({})", s.status),
+        },
+        Err(e) => TestGate {
+            passed: false,
+            detail: format!("cargo test: could not run ({e})"),
+        },
+    }
+}
+
+fn cmd_loop_run(root: &str, target: Option<&str>, dry_run: bool) -> i32 {
     let tasks_file = common::tasks_file();
 
     println!("\x1b[1;36m=== LAC Autonomous Loop Runner ===\x1b[0m");
@@ -1580,15 +1748,37 @@ fn cmd_loop_run(root: &str, target: Option<&str>, dry_run: bool) {
     } else {
         println!("  ! Gateway :{} inactive. Running offline simulation.", common::gateway_port());
     }
-    println!("  ✓ Context cap <= 32K verified (AGENTS.md policy)");
-    println!("  ✓ Apple Silicon thermals: Nominal");
-
+    // These two were constants in a println: the cap was "verified" without
+    // being read and the thermals were "Nominal" without a single call. Both
+    // are measurements now, so a Critical reading shows up here instead of
+    // being papered over by a green tick.
+    let cap = fs::read_to_string(cap_path())
+        .ok()
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| "unset (policy: 16,000)".to_string());
+    println!("  · Context cap: {} ({})", cap, cap_path());
+    let thermal = common::thermal_state();
+    println!(
+        "  {} Thermals: {}",
+        if thermal == "Nominal" { "✓" } else { "!" },
+        thermal
+    );
+    if thermal == "Critical" || thermal == "Serious" {
+        eprintln!(
+            "[GATE REJECTED] Thermals are {thermal}. AGENTS.md requires a pause before further work."
+        );
+        return 1;
+    }
     // -----------------------------------------------------------------
     // Phase 2: Implementation Phase (Agent: coder)
     // -----------------------------------------------------------------
     println!("\n\x1b[1;34m[2/5 IMPLEMENT]\x1b[0m Agent: coder | Task scope locked");
     println!("  Task instruction: \"{}\"", task_desc);
-    println!("  ✓ Changes scoped to active worktree without auto-committing");
+    // Said plainly, because nothing in this command writes code: the
+    // implementation phase belongs to `lac worker` (or the loop-orchestrator
+    // skill), which dispatches the agent inside a `task/<id>` worktree.
+    println!("  · This command dispatches no agent and writes no files.");
 
     // -----------------------------------------------------------------
     // Phase 3: Review Phase (Agent: @reviewer)
@@ -1603,36 +1793,29 @@ fn cmd_loop_run(root: &str, target: Option<&str>, dry_run: bool) {
         .unwrap_or_default();
     let mod_count = status_out.lines().count();
     println!("  Working tree: {} modified/untracked file(s)", mod_count);
-    println!("  Audit findings: 0 Critical, 0 Major (Clean diff)");
+    // A count of what is in the tree is a measurement; "0 Critical, 0 Major"
+    // was a verdict from a reviewer that never ran.
+    println!("  · No reviewer ran here, so there are no findings to report.");
 
     // -----------------------------------------------------------------
     // Phase 4: Test Gate (Tests-as-Gate)
     // -----------------------------------------------------------------
     println!("\n\x1b[1;34m[4/5 TEST GATE]\x1b[0m Executing test reliability gates...");
-    let has_cargo = fs::metadata(format!("{}/rust-src/Cargo.toml", root)).is_ok();
-    let mut tests_passed = true;
-    if has_cargo && !dry_run {
-        print!("  Running test suite... ");
-        let _ = io::stdout().flush();
-        let status = Command::new("cargo")
-            .args(["test", "--manifest-path", &format!("{}/rust-src/Cargo.toml", root)])
-            .output();
-        match status {
-            Ok(ref s) if s.status.success() => {
-                println!("\x1b[32mPASSED\x1b[0m");
-            }
-            _ => {
-                println!("\x1b[31mFAILED\x1b[0m");
-                tests_passed = false;
-            }
-        }
+    let gate = run_test_gate(root, dry_run);
+    if gate.passed {
+        println!("  {}", gate.detail);
+        println!("\x1b[32m  PASSED\x1b[0m");
     } else {
-        println!("  ✓ Tests passed (100% pass rate)");
-    }
-
-    if !tests_passed {
-        eprintln!("\x1b[1;31m[GATE REJECTED]\x1b[0m Tests failed. Halting loop before human gate per AGENTS.md.");
-        std::process::exit(1);
+        // Fail closed, the way every other gate in this project does: a gate
+        // that did not run has not passed. This is the branch `--dry-run` and
+        // every checkout without `rust-src/Cargo.toml` used to fall into,
+        // where it printed ✓ Tests passed (100% pass rate) with no cargo
+        // anywhere in the process.
+        eprintln!(
+            "\x1b[1;31m[GATE REJECTED]\x1b[0m Test gate {} — halting before the human gate per AGENTS.md.",
+            gate.detail
+        );
+        return 1;
     }
 
     // -----------------------------------------------------------------
@@ -1640,7 +1823,7 @@ fn cmd_loop_run(root: &str, target: Option<&str>, dry_run: bool) {
     // -----------------------------------------------------------------
     println!("\n\x1b[1;35m[5/5 HUMAN APPROVAL GATE]\x1b[0m Mandatory per AGENTS.md");
     println!("  -------------------------------------------------------------");
-    println!("  Reliability gates passed. Code is uncommitted in working tree.");
+    println!("  Test gate passed. Code is uncommitted in working tree.");
 
     let diff_stat = Command::new("git")
         .args(["diff", "--stat"])
@@ -1658,13 +1841,20 @@ fn cmd_loop_run(root: &str, target: Option<&str>, dry_run: bool) {
     println!("  -------------------------------------------------------------");
     println!("\x1b[1;32m[LOOP COMPLETED]\x1b[0m Human reviewer: Inspect `git diff` and commit manually when satisfied.");
 
-    // Update tasks file if the task was from the queue
+    // Update tasks file if the task was from the queue. A dry run cannot reach
+    // here — the gate above refuses it — and the queue is left alone
+    // regardless: a simulation must not retire a task that is still pending.
     if from_queue {
-        let updated = update_task(&tasks_content, &task_id, "complete", false);
-        if common::persist_or_warn(&tasks_file, &updated, "task_complete") {
-            println!("  ✓ Task [{}] transitioned to 'complete' in {}", task_id, tasks_file);
+        if dry_run {
+            println!("  · --dry-run: queue untouched, [{}] is still pending", task_id);
+        } else {
+            let updated = update_task(&tasks_content, &task_id, "complete", false);
+            if common::persist_or_warn(&tasks_file, &updated, "task_complete") {
+                println!("  ✓ Task [{}] transitioned to 'complete' in {}", task_id, tasks_file);
+            }
         }
     }
+    0
 }
 
 // ------------------------------------------------------------------ daemon -
@@ -1673,8 +1863,11 @@ fn launchd_src(root: &str, name: &str) -> String {
     format!("{}/launchd/{}.plist", root, name)
 }
 
-fn launchctl_bootstrap(dst: &str) {
-    // Modern macOS prefers bootstrap; fall back to legacy load -w.
+fn launchctl_bootstrap(dst: &str) -> bool {
+    // Modern macOS prefers bootstrap; fall back to legacy load -w. The result
+    // is reported: the old version returned `()`, so a plist that launchd
+    // refused — a bad path, a malformed file, a domain that is not there —
+    // left the command printing "installed" and exiting 0.
     let uid = Command::new("id")
         .arg("-u")
         .output()
@@ -1687,9 +1880,14 @@ fn launchctl_bootstrap(dst: &str) {
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
-    if !ok {
-        let _ = Command::new("launchctl").args(["load", "-w", dst]).status();
+    if ok {
+        return true;
     }
+    Command::new("launchctl")
+        .args(["load", "-w", dst])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn launchctl_bootout(dst: &str, label: &str) {
@@ -1726,8 +1924,12 @@ fn cmd_daemon(root: &str, args: &[String]) {
     match sub {
         "install" => {
             println!("Installing LAC 24/7 Daemons as macOS LaunchAgents...");
-            let _ = fs::create_dir_all(&agent_dir);
+            if let Err(e) = fs::create_dir_all(&agent_dir) {
+                eprintln!("  [x] Cannot create {}: {}", agent_dir, e);
+                std::process::exit(1);
+            }
             let _ = fs::create_dir_all(&log_dir);
+            let mut failures = 0usize;
             for label in ["org.lac.router", "org.lac.worker"] {
                 let src = launchd_src(root, label);
                 let dst = format!("{}/{}.plist", agent_dir, label);
@@ -1754,23 +1956,51 @@ fn cmd_daemon(root: &str, args: &[String]) {
                         let mut out = common::retarget_launchd_plist(&content, &home, root, &want_bin);
                         if label == "org.lac.router" {
                             let port = common::gateway_port().to_string();
-                            out = out.replace(
-                                "<key>LAC_ROUTER_PORT</key>\n    <string>8000</string>",
-                                &format!("<key>LAC_ROUTER_PORT</key>\n    <string>{}</string>", port),
-                            );
+                            // Matched by key, and required to have matched: the
+                            // old literal-needle replace silently did nothing
+                            // on the shipped template, so a relocated port left
+                            // the launchd router on 8000 while the whole CLI
+                            // addressed 9000 and reported the gateway down.
+                            match common::set_plist_string(&out, "LAC_ROUTER_PORT", &port) {
+                                Some(retargeted) => out = retargeted,
+                                None => {
+                                    eprintln!(
+                                        "  [x] {} has no LAC_ROUTER_PORT to retarget to :{} — not placing it",
+                                        src, port
+                                    );
+                                    failures += 1;
+                                    continue;
+                                }
+                            }
                         }
                         match common::atomic_write(&dst, &out) {
                             Ok(()) => println!("  [ok] Placed: {}", dst),
-                            Err(e) => println!("  [x] Write {} failed: {}", dst, e),
+                            Err(e) => {
+                                // Loading a plist that is not on disk would
+                                // leave whatever was there before in charge.
+                                eprintln!("  [x] Write {} failed: {}", dst, e);
+                                failures += 1;
+                                continue;
+                            }
                         }
                         launchctl_bootout(&dst, label); // idempotent reinstall
-                        launchctl_bootstrap(&dst);
+                        if !launchctl_bootstrap(&dst) {
+                            eprintln!("  [x] launchctl could not load {} — check `lac logs`", dst);
+                            failures += 1;
+                        }
                     }
-                    Err(_) => println!("  [!] Source plist missing: {} (skipped)", src),
+                    Err(e) => {
+                        eprintln!("  [!] Source plist missing: {} ({})", src, e);
+                        failures += 1;
+                    }
                 }
             }
             println!("Worker log: ~/Library/Logs/lac-worker.log");
             println!("Router log: ~/Library/Logs/lac-router.log");
+            if failures > 0 {
+                eprintln!("  [x] {} agent(s) did not install cleanly", failures);
+                std::process::exit(1);
+            }
         }
         "uninstall" => {
             println!("Unloading LAC 24/7 Daemons...");
@@ -3590,5 +3820,44 @@ mod tests {
         let c = ["--tokens".to_string(), "1".to_string()];
         let o = parse_probe_opts(&c);
         assert_eq!(o.tokens, 8);
+    }
+
+    /// The gate has to be able to say "not run" as well as "passed". It used to
+    /// have a branch that printed `✓ Tests passed (100% pass rate)` with no
+    /// cargo in the process, and that branch is where `--dry-run` and every
+    /// checkout without a manifest landed.
+    #[test]
+    fn a_gate_that_did_not_run_does_not_report_a_pass() {
+        let empty = std::env::temp_dir().join(format!("lac-test-no-manifest-{}", std::process::id()));
+        let _ = fs::create_dir_all(&empty);
+        // No rust-src/Cargo.toml under it: nothing to gate on.
+        let gate = run_test_gate(&empty.to_string_lossy(), false);
+        assert!(!gate.passed, "a missing suite is not a pass: {}", gate.detail);
+        assert!(gate.detail.contains("not run"), "{}", gate.detail);
+        let dry = run_test_gate(&empty.to_string_lossy(), true);
+        assert!(!dry.passed, "--dry-run runs nothing: {}", dry.detail);
+        assert!(dry.detail.contains("--dry-run"), "{}", dry.detail);
+        let _ = fs::remove_dir_all(&empty);
+    }
+
+    /// `fs::copy(x, x)` truncates x and returns `Ok(0)`, so the self-copy guard
+    /// is what stands between an operator's installed binary and a 0-byte one.
+    #[test]
+    fn a_copy_onto_its_own_source_is_recognized() {
+        let dir = std::env::temp_dir().join(format!("lac-test-same-file-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let real = dir.join("LACStudio");
+        fs::write(&real, b"binary").unwrap();
+        let link = dir.join("LACStudio.link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let absent = dir.join("not-created-yet");
+        assert!(same_file(&real.to_string_lossy(), &real.to_string_lossy()));
+        assert!(
+            same_file(&real.to_string_lossy(), &link.to_string_lossy()),
+            "a symlink to the source is the same file"
+        );
+        assert!(!same_file(&real.to_string_lossy(), &absent.to_string_lossy()));
+        assert!(!same_file(&absent.to_string_lossy(), &dir.join("other").to_string_lossy()));
+        let _ = fs::remove_dir_all(&dir);
     }
 }
