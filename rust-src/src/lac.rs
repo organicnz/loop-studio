@@ -626,6 +626,9 @@ fn opencode_model(root: &str) -> String {
 }
 
 /// Active backend according to the router (best-effort, empty when down).
+/// `"none"` is the router saying it has no ready backend, which is not the
+/// same as knowing nothing: it measured and found nothing serving, so it is
+/// reported as a state rather than dropped.
 fn router_active() -> String {
     common::http_get(common::gateway_port(), "/lac/status", 1200)
         .filter(|(code, _)| *code == 200)
@@ -638,6 +641,7 @@ fn router_active() -> String {
             let tail = &after[q1 + 1..];
             tail.find('"').map(|q2| tail[..q2].to_string())
         })
+        .filter(|active| !active.is_empty() && active != "none")
         .unwrap_or_default()
 }
 
@@ -697,13 +701,26 @@ fn cmd_status(root: &str, args: &[String]) {
     } else {
         println!("  - MLX (Q4 MTP) : OFFLINE");
     }
+    // The port printed is the port that was probed. These three labels used
+    // to be literals (8081, 11434, 8000) while the probe beside them honored
+    // LAC_LLAMA_PORT / LAC_OLLAMA_PORT / LAC_ROUTER_PORT, so an operator
+    // reading the screen was told a lane was up on a port nothing was bound
+    // to. `common.rs` already forbids exactly this.
     println!(
         "  - llama (Q8)   : {}",
-        if llama { "ONLINE (:8081)" } else { "OFFLINE" }
+        if llama {
+            format!("ONLINE (:{})", common::llama_port())
+        } else {
+            "OFFLINE".to_string()
+        }
     );
     println!(
         "  - Ollama       : {}",
-        if ollama { "ONLINE (:11434)" } else { "OFFLINE" }
+        if ollama {
+            format!("ONLINE (:{})", common::ollama_port())
+        } else {
+            "OFFLINE".to_string()
+        }
     );
     println!("================================================================");
 
@@ -2979,7 +2996,7 @@ fn cmd_ps() {
     println!(
         "  {:<8} :{}  {}",
         "gateway",
-        8000,
+        common::gateway_port(),
         if common::port_up(common::gateway_port()) { "LISTENING" } else { "-" }
     );
     println!(

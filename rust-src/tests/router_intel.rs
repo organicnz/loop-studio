@@ -337,5 +337,78 @@ fn router_intelligence() {
     assert!(usage.contains("\"outcome\":\"proxied\""), "{}", &usage[usage.len().saturating_sub(400)..]);
 
     drop(router);
+
+    // 5. The two replies that used to state something the router had not
+    // measured. Both are read by `lac status`, the Studio dashboard and any
+    // script watching this endpoint, so both are load-bearing.
+    //
+    // Every backend down: `/lac/status` used to answer `"status": "ok"` and
+    // name an active lane — the preferred id, which is the literal string
+    // "auto" by default — on a port nothing was bound to, in the same document
+    // whose `backends` block said all three were down.
+    let honest_home = std::env::temp_dir().join(format!("lac-test-honest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&honest_home);
+    std::fs::create_dir_all(&honest_home).expect("honest home");
+    // Reserve then release, so connect() is refused at once instead of
+    // succeeding into the kernel backlog and stalling the health probe.
+    let dead = || {
+        let reservation = TcpListener::bind(("127.0.0.1", 0)).expect("dead reservation");
+        reservation.local_addr().expect("dead address").port()
+    };
+    let (dead_mlx, dead_llama, dead_ollama) = (dead(), dead(), dead());
+    let honest_home_env = honest_home.to_string_lossy().into_owned();
+    let honest_mlx = dead_mlx.to_string();
+    let honest_llama = dead_llama.to_string();
+    let honest_ollama = dead_ollama.to_string();
+    let honest = support::spawn_router(
+        router_bin,
+        &[
+            ("HOME", &honest_home_env),
+            ("LAC_BIND_ADDR", "127.0.0.1"),
+            ("MLX_PORT", &honest_mlx),
+            ("LAC_LLAMA_PORT", &honest_llama),
+            ("LAC_OLLAMA_PORT", &honest_ollama),
+        ],
+    );
+    let honest_port = honest.port;
+    wait_router(honest_port);
+    let (code, status) = get(honest_port, "/lac/status");
+    assert_eq!(code, 200);
+    assert!(
+        status.contains("\"status\": \"no-backends\""),
+        "a gateway with nothing to serve must not say ok: {status}"
+    );
+    assert!(
+        status.contains("\"active\": \"none\"") && status.contains("\"target_port\": 0"),
+        "and must not name a lane: {status}"
+    );
+    assert!(
+        status.contains("\"up\": false"),
+        "the measurement beside the claim: {status}"
+    );
+
+    // A switch that could not be written. The reply used to say
+    // `"persisted": true` with the write's error discarded, so a read-only or
+    // full `~/.lac` lost the operator's choice silently while the dashboard
+    // showed it as saved. A directory where the file belongs makes the rename
+    // fail for any user, root included.
+    std::fs::create_dir_all(honest_home.join(".lac/router-backend")).expect("block the write");
+    let (code, switched) = get(honest_port, "/lac/switch?target=llama");
+    assert_eq!(code, 200);
+    assert!(
+        switched.contains("\"target\": \"llama\""),
+        "the switch itself still takes effect: {switched}"
+    );
+    assert!(
+        switched.contains("\"persisted\": false"),
+        "and the reply must admit it was not saved: {switched}"
+    );
+    let (_, after) = get(honest_port, "/lac/status");
+    assert!(
+        after.contains("\"preferred\": \"llama\""),
+        "the in-memory choice is real even when the file could not be written: {after}"
+    );
+    drop(honest);
+    let _ = std::fs::remove_dir_all(&honest_home);
     let _ = std::fs::remove_dir_all(&tmp_home);
 }

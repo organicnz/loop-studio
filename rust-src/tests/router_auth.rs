@@ -309,8 +309,13 @@ fn browser_origins_and_rebound_hosts_are_refused() {
             format!("GET /lac/status HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
         let (status, head, body) = raw_request(port, &request);
         assert_eq!(status, 200, "Host: {host} must be served: {head}");
+        // The real status document, not a refusal. Its `status` field is not
+        // asserted here: this fixture points every backend port at the router's
+        // own port, so nothing is serving and the router now says
+        // `no-backends` — the honesty this suite is not about, and which
+        // `router_intel` pins directly.
         assert!(
-            body.contains("\"status\": \"ok\""),
+            body.contains("\"router\": \"lac-router") && body.contains("\"backends\""),
             "Host: {host} must get the real status body: {body}"
         );
         // The load-bearing assertion for every native client: no CORS header
@@ -513,7 +518,10 @@ fn operator_allowlists_and_a_token_reopen_exactly_what_they_name() {
         );
         let (status, head, body) = raw_request(origin_port, &request);
         assert_eq!(status, 200, "allow-listed origin {origin}: {head}");
-        assert!(body.contains("\"status\": \"ok\""), "{origin}: {body}");
+        assert!(
+            body.contains("\"router\": \"lac-router") && body.contains("\"backends\""),
+            "{origin}: {body}"
+        );
         // Its own value back, never a wildcard the router picked, plus Vary
         // so a shared cache cannot hand this reply to another page.
         assert!(

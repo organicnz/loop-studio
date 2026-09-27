@@ -134,7 +134,9 @@ fn spawn_backend() -> u16 {
                         [raw.clone(), b"\r\n\r\n".to_vec(), body.clone()].concat(),
                     );
                 }
-                let scenario = if text.contains("many-interims") {
+                let scenario = if text.contains("hop-by-hop") {
+                    "hop-by-hop"
+                } else if text.contains("many-interims") {
                     "many-interims"
                 } else if text.contains("client-gone") {
                     "client-gone"
@@ -193,6 +195,19 @@ fn spawn_backend() -> u16 {
                 };
                 eprintln!("[fake] scenario={} body_len={}", scenario, body.len());
                 match scenario {
+                    // Answers with a head that claims a reusable connection —
+                    // what every HTTP/1.1 inference server does unless it is
+                    // told otherwise — and echoes the request head it received
+                    // so the test can read both directions from one probe.
+                    "hop-by-hop" => {
+                        let body = String::from_utf8_lossy(head_bytes).replace('\r', " ");
+                        let _ = s.write_all(format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: keep-alive\r\nKeep-Alive: timeout=30\r\nX-Backend: scripted\r\n\r\n{}",
+                            body.len(),
+                            body
+                        ).as_bytes());
+                        thread::sleep(Duration::from_millis(200));
+                    }
                     "many-interims" => {
                         for _ in 0..9 {
                             let _ = s.write_all(b"HTTP/1.1 100 Continue\r\n\r\n");
@@ -660,6 +675,76 @@ fn probe_raw_with_body(router_port: u16, body: &str) -> (Vec<u8>, Vec<(f64, usiz
     let t0 = Instant::now();
     let response = probe_raw(router_port, request.as_bytes());
     (response, Vec::new(), t0.elapsed().as_secs_f64())
+}
+
+/// One parsed line of the router's usage log: the fields a reader sums.
+#[derive(Debug, PartialEq, Eq)]
+struct UsageLine {
+    rid: usize,
+    attempt: u32,
+    req_body: u64,
+    resp_body: u64,
+    est_tokens: u64,
+    outcome: String,
+}
+
+fn usage_number(line: &str, key: &str) -> u64 {
+    let at = line
+        .find(&format!("\"{key}\":"))
+        .unwrap_or_else(|| panic!("{key} missing from usage line: {line}"))
+        + key.len()
+        + 3;
+    line[at..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .expect("numeric usage field")
+}
+
+fn usage_string(line: &str, key: &str) -> String {
+    let at = line
+        .find(&format!("\"{key}\":\""))
+        .unwrap_or_else(|| panic!("{key} missing from usage line: {line}"))
+        + key.len()
+        + 4;
+    let rest = &line[at..];
+    rest[..rest.find('"').expect("terminated string field")].to_string()
+}
+
+/// Every line of the usage log that shares its highest `rid` — the last
+/// request the router logged. Retries of one request are the lines that share
+/// a rid, so this is how a failover is read back.
+fn usage_lines_for_last_rid(path: &str) -> Vec<UsageLine> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let mut parsed: Vec<UsageLine> = text
+        .lines()
+        .filter(|line| line.contains("\"attempt\":"))
+        .map(|line| UsageLine {
+            rid: usage_number(line, "rid") as usize,
+            attempt: usage_number(line, "attempt") as u32,
+            req_body: usage_number(line, "req_body"),
+            resp_body: usage_number(line, "resp_body"),
+            est_tokens: usage_number(line, "est_tokens"),
+            outcome: usage_string(line, "outcome"),
+        })
+        .collect();
+    let last = parsed.iter().map(|l| l.rid).max().unwrap_or(0);
+    parsed.retain(|l| l.rid == last);
+    parsed
+}
+
+/// The router appends its usage line after the client already has the
+/// response, so reading straight after a probe races the connection thread.
+fn wait_usage_lines(path: &str, minimum: usize) -> Vec<UsageLine> {
+    let start = Instant::now();
+    loop {
+        let lines = usage_lines_for_last_rid(path);
+        if lines.len() >= minimum || start.elapsed() > Duration::from_secs(5) {
+            return lines;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn wait_router(port: u16) {
@@ -1253,6 +1338,151 @@ fn relay_framing_regressions() {
     // same fragility this block exists to remove.
     drop(breaker_router);
     let _ = std::fs::remove_dir_all(&breaker_home);
+
+    // The gateway must not promise a connection it does not keep, and must not
+    // hand the backend the client's connection-scoped fields. Both directions
+    // in one probe: the fake backend answers with `Connection: keep-alive` (the
+    // default for a real HTTP/1.1 server) and echoes the head it received.
+    //
+    // Its own router and its own backend, because the shared scripted backend
+    // has been faulted by every scenario above and its breaker is open in the
+    // main router by now — a request here would silently be served by the
+    // healthy backend instead, and the probe would pass without ever reaching
+    // the code it is about.
+    let hop_backend_port = spawn_backend();
+    let hop_home = std::env::temp_dir().join(format!("lac-test-relay-hop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&hop_home);
+    let _ = std::fs::create_dir_all(&hop_home);
+    let hop_home_env = hop_home.to_string_lossy().into_owned();
+    let hop_env = hop_backend_port.to_string();
+    let hop_router = support::spawn_router(
+        router_bin,
+        &[
+            ("HOME", &hop_home_env),
+            ("LAC_BIND_ADDR", "127.0.0.1"),
+            ("MLX_PORT", &hop_env),
+            ("LAC_LLAMA_PORT", &dead_env),
+            ("LAC_OLLAMA_PORT", &dead_env),
+            ("LAC_BACKEND", "auto"),
+        ],
+    );
+    let hop_router_port = hop_router.port;
+    assert_ne!(hop_router_port, dead_port, "router took the dead-backend port");
+    wait_router(hop_router_port);
+    let hop_body = r#"{"model":"qwen3.8-27b","scenario":"hop-by-hop"}"#;
+    let hop_request = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive, X-Client-Secret\r\nX-Client-Secret: hunter2\r\nProxy-Connection: keep-alive\r\nTE: trailers\r\nUpgrade: h2c\r\nX-Keep: yes\r\n\r\n{hop_body}",
+        hop_body.len()
+    );
+    let hop = probe_raw(hop_router_port, hop_request.as_bytes());
+    let hop_text = String::from_utf8_lossy(&hop).to_string();
+    let hop_head_end = hop
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|p| p + 4)
+        .unwrap_or(hop.len());
+    let hop_head = hop_text[..hop_head_end].to_lowercase();
+    let hop_seen_by_backend = hop_text[hop_head_end..].to_lowercase();
+    assert!(hop_head.contains("x-backend: scripted"), "the backend must have answered this probe, not a failover: {hop_text}");
+    assert!(
+        hop_head.contains("connection: close"),
+        "the relay serves one request per connection and must say so: {hop_head}"
+    );
+    assert!(
+        !hop_head.contains("keep-alive"),
+        "the backend's reusable-connection promise is not the router's to relay: {hop_head}"
+    );
+    for gone in ["x-client-secret:", "proxy-connection:", "te:", "upgrade:", "connection:"] {
+        assert!(
+            !hop_seen_by_backend.lines().any(|line| line.trim_start().starts_with(gone)),
+            "{gone} reached the backend: {hop_seen_by_backend}"
+        );
+    }
+    assert!(
+        hop_seen_by_backend.contains("x-keep: yes"),
+        "unrelated fields must survive: {hop_seen_by_backend}"
+    );
+    assert!(
+        hop_seen_by_backend.contains("content-length:"),
+        "framing is load-bearing and must survive: {hop_seen_by_backend}"
+    );
+    drop(hop_router);
+    let _ = std::fs::remove_dir_all(&hop_home);
+
+    // One request, one charge. The failover that ends in an *answer* is the
+    // shape the accounting rule used to miss: the body was charged on the
+    // discarded attempt and again on the attempt the client actually got, so
+    // `kv-manage` — which sums `est_tokens` over the window from the log the
+    // docs call the honest token source — read one request as two. Measured
+    // here at the log, not in a unit test, because the arms share nothing but
+    // the log line: the bug lived in the arms that did not carry the rule.
+    // Its own router, so this usage log holds only this rid.
+    let charge_home = std::env::temp_dir().join(format!("lac-test-relay-charge-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&charge_home);
+    let _ = std::fs::create_dir_all(&charge_home);
+    let charge_home_env = charge_home.to_string_lossy().into_owned();
+    let charge_router = support::spawn_router(
+        router_bin,
+        &[
+            ("HOME", &charge_home_env),
+            ("LAC_BIND_ADDR", "127.0.0.1"),
+            ("MLX_PORT", &llama_env),
+            ("LAC_LLAMA_PORT", &healthy_env),
+            ("LAC_OLLAMA_PORT", &dead_env),
+            ("LAC_BACKEND", "auto"),
+        ],
+    );
+    let charge_port = charge_router.port;
+    assert_ne!(charge_port, dead_port, "router took the dead-backend port");
+    wait_router(charge_port);
+
+    // A body of an exact, known length, so the sum can be checked against a
+    // number rather than against a ratio.
+    let pad = "x".repeat(400);
+    let failing = format!(r#"{{"model":"qwen3.8-27b","scenario":"always-503","pad":"{pad}"}}"#);
+    let charged_len = failing.len() as u64;
+    let (raw_charge, _, _) = probe_raw_with_body(charge_port, &failing);
+    let answer = String::from_utf8_lossy(&raw_charge).to_string();
+    assert!(
+        answer.contains("healthy-failover"),
+        "the request must have been answered by the second backend: {answer}"
+    );
+    let charge_log = format!("{}/.lac/router-usage.jsonl", charge_home.display());
+    let lines = wait_usage_lines(&charge_log, 2);
+    assert_eq!(lines.len(), 2, "one line per attempt, no more: {lines:?}");
+    assert_eq!(
+        lines[0].outcome, "http-error",
+        "the first attempt is the discarded one: {lines:?}"
+    );
+    assert_eq!(lines[1].outcome, "proxied", "the second is the answer: {lines:?}");
+    assert_eq!(
+        lines.iter().map(|l| l.attempt).collect::<Vec<_>>(),
+        vec![0, 1],
+        "attempts are 0-based and unique per rid: {lines:?}"
+    );
+    let body_sum: u64 = lines.iter().map(|l| l.req_body).sum();
+    assert_eq!(
+        body_sum, charged_len,
+        "the client's body is charged once across the whole rid: {lines:?}"
+    );
+    let first_attempt_body: u64 = lines
+        .iter()
+        .filter(|l| l.attempt == 0)
+        .map(|l| l.req_body)
+        .sum();
+    assert_eq!(
+        first_attempt_body, charged_len,
+        "the documented alternative rule agrees: {lines:?}"
+    );
+    let response_sum: u64 = lines.iter().map(|l| l.resp_body).sum();
+    let est_sum: u64 = lines.iter().map(|l| l.est_tokens).sum();
+    assert_eq!(
+        est_sum,
+        (charged_len + response_sum) / 4,
+        "the window sum is the body once plus every generated byte: {lines:?}"
+    );
+    drop(charge_router);
+    let _ = std::fs::remove_dir_all(&charge_home);
 
     drop(budget_router);
     drop(router);
