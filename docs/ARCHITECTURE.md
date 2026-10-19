@@ -126,7 +126,7 @@ rule on Oracle/VPS firewalls.
     status read, `/loop-studio/switch`, or an inference backend. Regression coverage:
     `router_auth` (`browser_origins_and_rebound_hosts_are_refused`,
     `operator_allowlists_and_a_token_reopen_exactly_what_they_name`).
-- Studio: `LoopStudioConnectionStore` (`SwiftUI/.../LACConnection.swift`) — host
+- Studio: `LoopStudioConnectionStore` (`SwiftUI/Sources/LoopStudio/LoopStudioConnection.swift`) — host
   (MagicDNS `mac.tailXXX.ts.net`), port, TLS toggle (required for remote
   profiles; use `tailscale serve --https`), Bearer token in Keychain
   (`org.loopstudio.studio`). All clients (chat, code, loops, dashboard) route through

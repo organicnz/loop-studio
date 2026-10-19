@@ -68,7 +68,7 @@ opencode2 run "Verify stack: list files and check git status"
 ### Remote via Tailscale (no public ports)
 ```bash
 # On the Mac: join tailnet, set token, keep router on loopback, front it with TLS
-brew install tailscale && sudo tailscaled && tailscale up
+brew install tailscale && sudo brew services start tailscale && tailscale up
 export LOOP_STUDIO_API_TOKEN="$(openssl rand -hex 32)"
 launchctl setenv LOOP_STUDIO_API_TOKEN "$LOOP_STUDIO_API_TOKEN"
 tailscale serve --https 443 http://127.0.0.1:8000

@@ -1,9 +1,9 @@
+---
 name: Feature or bug
 about: Propose a change to Loop Studio
 title: ''
 labels: ''
 assignees: ''
-
 ---
 
 ## What is the problem?

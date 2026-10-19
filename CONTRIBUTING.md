@@ -22,7 +22,7 @@ Two properties are load-bearing and should not be traded away:
 
 - macOS on Apple Silicon (13.0+)
 - Rust toolchain (stable) — `cargo`
-- Swift toolchain (Xcode 16+) — `swift`
+- Swift toolchain (Xcode 26+, macOS 26 SDK) — `swift`
 - `mise` and `just`/`make` for the task runner
 - `lefthook` for the git hooks
 

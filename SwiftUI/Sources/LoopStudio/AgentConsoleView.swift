@@ -26,7 +26,11 @@ public final class AgentConsoleStore: ObservableObject {
             command: "/usr/bin/env",
             arguments: ["cargo", "test", "--manifest-path", cargoManifest],
             workingDirectory: repoRoot,
-            title: "cargo test (Rust Backend)"
+            title: "cargo test (Rust Backend)",
+            // A test run is not a 30-second command. A cold build routinely
+            // takes longer, and the console used to kill it and report a
+            // failing exit code for a run that was still working.
+            timeout: nil
         )
     }
 
@@ -36,7 +40,8 @@ public final class AgentConsoleStore: ObservableObject {
             command: "/usr/bin/swift",
             arguments: ["test"],
             workingDirectory: swiftDir,
-            title: "swift test (Loop Studio)"
+            title: "swift test (Loop Studio)",
+            timeout: nil
         )
     }
 
@@ -75,7 +80,21 @@ public final class AgentConsoleStore: ObservableObject {
         }
     }
 
-    public func execute(command: String, arguments: [String], workingDirectory: URL, title: String) {
+    /// Run a command in the console.
+    ///
+    /// `timeout` is how long the command may run before it is terminated
+    /// (TERM, then after 2s INT, then after 2s SIGKILL). `nil` means no
+    /// timeout — which is what a test run needs: a cold `cargo test` or
+    /// `swift test` routinely takes longer than any fixed budget, and the
+    /// console used to kill it and report a failing exit code for a run that
+    /// was still working.
+    public func execute(
+        command: String,
+        arguments: [String],
+        workingDirectory: URL,
+        title: String,
+        timeout: Duration? = .seconds(30)
+    ) {
         guard !isRunning else { return }
 
         self.isRunning = true
@@ -110,17 +129,21 @@ public final class AgentConsoleStore: ObservableObject {
 
         self.activeProcess = proc
 
-        // 30s timeout: TERM → after 2s INT → after 2s KILL.
-        Task { @MainActor [weak self, proc] in
-            try? await Task.sleep(for: .seconds(30))
-            guard let self, self.activeProcess?.processIdentifier == proc.processIdentifier else { return }
-            proc.terminate()
-            try? await Task.sleep(for: .seconds(2))
-            guard self.activeProcess?.processIdentifier == proc.processIdentifier else { return }
-            proc.interrupt()
-            try? await Task.sleep(for: .seconds(2))
-            guard self.activeProcess?.processIdentifier == proc.processIdentifier else { return }
-            Darwin.kill(proc.processIdentifier, SIGKILL)
+        // Timeout: TERM → after 2s INT → after 2s KILL. Skipped entirely when
+        // there is no timeout, so a long run is never killed for taking its
+        // time.
+        if let timeout {
+            Task { @MainActor [weak self, proc] in
+                try? await Task.sleep(for: timeout)
+                guard let self, self.activeProcess?.processIdentifier == proc.processIdentifier else { return }
+                proc.terminate()
+                try? await Task.sleep(for: .seconds(2))
+                guard self.activeProcess?.processIdentifier == proc.processIdentifier else { return }
+                proc.interrupt()
+                try? await Task.sleep(for: .seconds(2))
+                guard self.activeProcess?.processIdentifier == proc.processIdentifier else { return }
+                Darwin.kill(proc.processIdentifier, SIGKILL)
+            }
         }
 
         let outHandle = outPipe.fileHandleForReading

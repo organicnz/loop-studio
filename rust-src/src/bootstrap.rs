@@ -68,7 +68,17 @@ enum ZprofileOutcome {
 /// silently diverged. Mount state is exactly the thing that changes; a
 /// one-shot marker cannot be the right tool for it.
 fn ensure_zprofile_in(zp: &str, model_base: &str) -> ZprofileOutcome {
-    let current = fs::read_to_string(zp).unwrap_or_default();
+    // Only a *missing* file means "start from an empty profile". Every other
+    // read error — a file with non-UTF-8 bytes, a file that exists but is
+    // not readable — used to become an empty string, and the managed block
+    // was then written over the top of it: the user's whole shell profile
+    // replaced by a few managed lines, and the run reported "Installed".
+    // Never rewrite a file whose contents we could not read.
+    let current = match fs::read_to_string(zp) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return ZprofileOutcome::Failed(format!("cannot read {zp}: {e}")),
+    };
     let desired = managed_block(model_base);
     let start = current.find(ZPROFILE_MARKER);
     let end = current.find(ZPROFILE_END);
@@ -319,14 +329,31 @@ fn main() {
     let loops_dir = format!("{}/todo/loop-studio-loops", home);
     let old_loops = format!("{}/todo/lac-loops", home);
     if fs::metadata(&old_loops).is_ok() && fs::metadata(&loops_dir).is_err() {
-        let _ = fs::create_dir_all(&loops_dir);
+        // A copy that failed is a copy that did not happen. The errors used
+        // to be discarded while the run printed "migrated loops" anyway, and
+        // because `loops_dir` then exists, the guard above kept the block
+        // from ever running again — so the user's legacy loops stayed behind
+        // under the old name and the run still reported success.
+        let mut migrated_ok = fs::create_dir_all(&loops_dir).is_ok();
         if let Ok(entries) = fs::read_dir(&old_loops) {
             for entry in entries.flatten() {
                 let dest = format!("{}/{}", loops_dir, entry.file_name().to_string_lossy());
-                let _ = fs::copy(entry.path(), &dest);
+                // `install_template` handles a nested directory, which a raw
+                // `fs::copy` fails on with EISDIR.
+                match install_template(&entry.path(), &dest) {
+                    Ok(true) => {}
+                    Ok(false) => {}
+                    Err(e) => {
+                        eprintln!("   FAILED to migrate loop {}: {}", dest, e);
+                        failures += 1;
+                        migrated_ok = false;
+                    }
+                }
             }
         }
-        eprintln!("   migrated loops from {}", old_loops);
+        if migrated_ok {
+            eprintln!("   migrated loops from {}", old_loops);
+        }
     }
     if let Err(e) = fs::create_dir_all(&loops_dir) {
         eprintln!("   FAILED {}: {}", loops_dir, e);
@@ -363,12 +390,22 @@ fn main() {
     let task_template = format!("{}/templates/tasks/loop-studio-tasks.yaml", root);
     let task_dest = format!("{}/todo/loop-studio-tasks.yaml", home);
     let old_task = format!("{}/todo/lac-tasks.yaml", home);
+    // A failed migration must not be papered over by installing a fresh
+    // template: that leaves the user's real queue behind under the old name
+    // and reports success. Count the failure and skip the template install,
+    // so the next run tries the migration again.
+    let mut task_migration_failed = false;
     if fs::metadata(&old_task).is_ok() && fs::metadata(&task_dest).is_err() {
         if let Some(parent) = Path::new(&task_dest).parent() {
             let _ = fs::create_dir_all(parent);
         }
-        if fs::copy(&old_task, &task_dest).is_ok() {
-            eprintln!("   migrated task queue from {}", old_task);
+        match fs::copy(&old_task, &task_dest) {
+            Ok(_) => eprintln!("   migrated task queue from {}", old_task),
+            Err(e) => {
+                eprintln!("   FAILED to migrate task queue {}: {}", old_task, e);
+                failures += 1;
+                task_migration_failed = true;
+            }
         }
     }
     if let Some(parent) = Path::new(&task_dest).parent() {
@@ -384,9 +421,18 @@ fn main() {
     // file that does not exist, then counted nothing. `loop-studio loop init` reports
     // the same state correctly as a failure, so the two writers of this one
     // fact disagreed.
-    match (fs::metadata(&task_dest), Path::new(&task_template).exists()) {
-        (Ok(_), _) => eprintln!("   keeping existing task queue: {}", task_dest),
-        (Err(_), true) => match install_template(Path::new(&task_template), &task_dest) {
+    match (fs::metadata(&task_dest), Path::new(&task_template).exists(), task_migration_failed) {
+        (Ok(_), _, _) => eprintln!("   keeping existing task queue: {}", task_dest),
+        // The migration was tried and failed. Installing the template now
+        // would hide the user's real queue behind a fresh, empty one, so say
+        // what happened and let the next run retry the migration.
+        (Err(_), _, true) => {
+            eprintln!(
+                "   FAILED task queue could not be migrated from {} — not installing a template over it",
+                old_task
+            );
+        }
+        (Err(_), true, false) => match install_template(Path::new(&task_template), &task_dest) {
             Ok(true) => eprintln!("   installed task queue: {}", task_dest),
             Ok(false) => {
                 eprintln!("   FAILED task template is not a file: {}", task_template);
@@ -397,7 +443,7 @@ fn main() {
                 failures += 1;
             }
         },
-        (Err(_), false) => {
+        (Err(_), false, false) => {
             eprintln!(
                 "   FAILED no task queue at {} and no template at {} to install from",
                 task_dest, task_template
@@ -625,6 +671,33 @@ mod tests {
             ZprofileOutcome::Failed(_) => {}
             other => panic!("expected Failed, got {other:?}"),
         }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unreadable_zprofile_is_never_overwritten() {
+        // A file that exists but cannot be read as UTF-8 is not an empty
+        // profile. Treating it as one and writing the managed block over it
+        // replaced the user's whole shell configuration with a few managed
+        // lines, and the run reported "Installed".
+        let dir = std::env::temp_dir().join(format!("loop-studio-test-zpbin-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("mkdir");
+        let zp = dir.join(".zprofile");
+        // 0xFF is not valid UTF-8, so `read_to_string` fails with
+        // InvalidData while the file itself is perfectly present.
+        let original: &[u8] = b"export PATH=/custom/bin:$PATH\n# \xff\xfe binary\n";
+        fs::write(&zp, original).expect("write");
+
+        match ensure_zprofile_in(&zp.to_string_lossy(), "/Volumes/AIModels") {
+            ZprofileOutcome::Failed(_) => {}
+            other => panic!("expected Failed, got {other:?}"),
+        }
+
+        // The file must be byte-for-byte what it was.
+        let after = fs::read(&zp).expect("reread");
+        assert_eq!(after, original, "the profile was modified");
 
         let _ = fs::remove_dir_all(&dir);
     }

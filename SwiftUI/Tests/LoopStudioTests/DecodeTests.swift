@@ -2202,6 +2202,34 @@ struct QueueWriterAgreementTests {
         }
     }
 
+    /// An apostrophe must survive a read/write round trip unchanged.
+    ///
+    /// The writer emits single-quoted scalars and escapes an embedded quote
+    /// as `''`. The reader used to strip the outer quote characters without
+    /// unescaping, so `It's` came back as `It''s` and the next write emitted
+    /// `It''''s` — every queue mutation doubled every apostrophe in every
+    /// task, without limit.
+    @Test func an_apostrophe_survives_a_round_trip() {
+        let yaml = """
+        - id: "t-1"
+          task: 'Fix the user''s login redirect'
+          priority: high
+          status: pending
+        """
+        let items = LoopsStore.parseTasksYaml(yaml)
+        #expect(items.count == 1)
+        #expect(items.first?.task == "Fix the user's login redirect")
+
+        // And it must still be correct after being written back out.
+        let again = LoopsStore.parseTasksYaml(
+            LoopsStore.serializeTaskBlocks(
+                LoopsStore.parseTaskBlocks(yaml),
+                preamble: ""
+            )
+        )
+        #expect(again.first?.task == "Fix the user's login redirect")
+    }
+
     /// The app's own reader and its writer's model must not drift.
     @Test func the_read_model_agrees_with_the_block_model() {
         let items = LoopsStore.parseTasksYaml(Self.workerWritten)

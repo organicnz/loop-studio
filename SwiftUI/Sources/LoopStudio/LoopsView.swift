@@ -17,6 +17,11 @@ public struct LoopsView: View {
     @State private var gitDiffError: String? = nil
     @State private var isLogDrawerExpanded: Bool = true
     @State private var newTaskDescription: String = ""
+    /// True while a task is being added. The add waits on the queue lock,
+    /// which can take up to 30s, and the button stayed enabled throughout —
+    /// so a second press started a second mutation and the queue ended up
+    /// with two tasks where one was asked for.
+    @State private var isScheduling = false
     @State private var newTaskPriority: TaskPriority = .high
     @State private var newTaskLoop: String = "daily-coding.yaml"
     @State private var newTaskModule: String = ""
@@ -592,7 +597,9 @@ public struct LoopsView: View {
                     let module = newTaskModule
                     let priority = newTaskPriority
                     let loop = newTaskLoop
+                    isScheduling = true
                     Task {
+                        defer { isScheduling = false }
                         if await store.addTask(
                             taskDescription: description,
                             priority: priority,
@@ -608,7 +615,7 @@ public struct LoopsView: View {
                 .keyboardShortcut(.defaultAction)
                 .controlSize(.regular)
                 .loopStudioGlassProminent()
-                .disabled(newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(isScheduling || newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(22)

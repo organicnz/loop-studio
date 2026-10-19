@@ -168,9 +168,9 @@ fn serve_menu(root: &str) {
     loop {
         clear();
         println!("=== Serve Menu (qwen3.8-27B) ===\n");
-        println!("  ollama :11434  {}", if port_up(11434) { "UP" } else { "DOWN" });
+        println!("  ollama :{}  {}", common::ollama_port(), if port_up(common::ollama_port()) { "UP" } else { "DOWN" });
         println!("  mlx :{}  {}", common::mlx_port(), if port_up(common::mlx_port()) { "UP" } else { "DOWN" });
-        println!("  llama :8081 {}", if port_up(8081) { "UP" } else { "DOWN" });
+        println!("  llama :{} {}", common::llama_port(), if port_up(common::llama_port()) { "UP" } else { "DOWN" });
         println!();
         println!("  1) Start mlx-lm Q4 (fast, 16.1GB) — blocks, Ctrl+C stops");
         println!("  2) Start llama-server Q8_0 (quality, ~20GB) — blocks");
@@ -202,8 +202,8 @@ fn serve_menu(root: &str) {
                 pause();
             }
             "3" => {
-                if port_up(11434) {
-                    println!("ollama :11434 already up");
+                if port_up(common::ollama_port()) {
+                    println!("ollama :{} already up", common::ollama_port());
                     pause();
                     continue;
                 }
@@ -215,8 +215,8 @@ fn serve_menu(root: &str) {
                     .unwrap_or(false);
                 if started {
                     println!("brew services: ollama started");
-                } else if port_up(11434) {
-                    println!("ollama :11434 already up");
+                } else if port_up(common::ollama_port()) {
+                    println!("ollama :{} already up", common::ollama_port());
                 } else {
                     match Command::new("ollama")
                         .arg("serve")
@@ -724,9 +724,9 @@ fn preflight(root: &str) {
     clear();
     println!("=== Pre-flight (long runs) ===\n");
     println!("-- servers --");
-    println!("ollama :11434  {}", if port_up(11434) { "UP" } else { "DOWN" });
+    println!("ollama :{}  {}", common::ollama_port(), if port_up(common::ollama_port()) { "UP" } else { "DOWN" });
     println!("mlx :{}  {}", common::mlx_port(), if port_up(common::mlx_port()) { "UP" } else { "DOWN" });
-    println!("llama :8081 {}", if port_up(8081) { "UP" } else { "DOWN" });
+    println!("llama :{} {}", common::llama_port(), if port_up(common::llama_port()) { "UP" } else { "DOWN" });
     println!("\n-- kv-manage check --");
     println!("{}", run(&bin(root, "kv-manage"), &["check"]));
     println!("\n-- thermals --");

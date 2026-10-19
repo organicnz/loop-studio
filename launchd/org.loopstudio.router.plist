@@ -34,9 +34,12 @@
     <dict>
         <key>LOOP_STUDIO_ROUTER_PORT</key>
         <string>8000</string>
-        <!-- Loopback by default. For Tailscale remote set to 0.0.0.0 AND set
+        <!-- Keep loopback. For Tailscale remote, front it with
+             `tailscale serve --https 443 http://127.0.0.1:8000` and set
              LOOP_STUDIO_API_TOKEN via `launchctl setenv LOOP_STUDIO_API_TOKEN "$(openssl rand -hex 32)"`
-             then `loop-studio daemon install` again. Never commit a token here. -->
+             then `loop-studio daemon install` again. Never commit a token here.
+             Binding 0.0.0.0 would listen on every interface, LAN and Wi-Fi
+             included, not only the tailnet. -->
         <key>LOOP_STUDIO_BIND_ADDR</key>
         <string>127.0.0.1</string>
         <key>PATH</key>

@@ -14,8 +14,8 @@ It is the better model per your preference, replacing the older `qwen3-coder`.
 
 ```bash
 # Clone & enter
-git clone <repo-url> ~/dev/work/AI/Loop Studio
-cd ~/dev/work/AI/Loop Studio
+git clone <repo-url> ~/dev/work/AI/loop-studio
+cd ~/dev/work/AI/loop-studio
 
 # Option A — Unified CLI (fastest & recommended)
 ./rust-src/target/release/loop-studio doctor     # Verify stack integrity

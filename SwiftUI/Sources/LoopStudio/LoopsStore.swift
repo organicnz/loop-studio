@@ -277,9 +277,12 @@ public class LoopsStore: ObservableObject {
     /// Tail of the queue-mutation chain, so two edits land in the order the
     /// user made them.
     private var mutationTail: Task<Void, Never>?
-    /// True while a mutation's file work is outstanding, so a reconcile knows
-    /// the board is ahead of the file on purpose and must not be reconciled.
-    private var mutationInFlight = false
+    /// How many mutations' file work is outstanding, so a reconcile knows the
+    /// board is ahead of the file on purpose and must not be reconciled.
+    /// A count rather than a bool, so two overlapping mutations do not clear
+    /// each other's flag.
+    private var mutationsInFlight = 0
+    private var mutationInFlight: Bool { mutationsInFlight > 0 }
     /// When the queue file was last read for a reconcile, for the mtime check.
     private var lastReconcileAt: Date?
     private let tasksWriteURLOverride: URL?
@@ -486,7 +489,7 @@ public class LoopsStore: ObservableObject {
         // the order they were asked for, which is what the old synchronous
         // main-actor version got for free.
         let previous = mutationTail
-        mutationInFlight = true
+        mutationsInFlight += 1
         let work = Task { @MainActor () -> Outcome<[TaskItem]> in
             _ = await previous?.value
             return await Task.detached(priority: .userInitiated) { () -> Outcome<[TaskItem]> in
@@ -544,8 +547,15 @@ public class LoopsStore: ObservableObject {
             }.value
         }
         mutationTail = Task { _ = await work.value }
-        mutationInFlight = false
-        switch await work.value {
+        let outcome = await work.value
+        // Decremented only once the file work is actually done. The flag used
+        // to be cleared on the same turn that set it, before the await, so it
+        // was never true while the lock was being waited on — and a reconcile
+        // could replace `tasks` with the stale file, making the optimistic
+        // edit disappear until the write landed. A count, rather than a
+        // bool, so overlapping mutations do not clear each other's flag.
+        mutationsInFlight -= 1
+        switch outcome {
         case .success(let updated):
             tasks = updated
             return true
@@ -776,9 +786,14 @@ public class LoopsStore: ObservableObject {
         currentRunnerPhase = .complete
         let saved = await moveTask(id: task.id, to: .completed)
         guard saved else {
+            // The write failed, so the board rolled back and the task is not
+            // complete. The gate has to be re-opened, or the operator has no
+            // Approve button to retry with and the run is stuck.
+            isGateAwaitingApproval = true
+            currentRunnerPhase = .humanGate
             appendLog(
                 "\n[x] The queue write failed, so \(task.id) is NOT marked complete. "
-                + "The board shows your approval; the queue on disk does not have it."
+                + "The gate is still open; approve again to retry."
             )
             return
         }
@@ -1000,68 +1015,21 @@ public class LoopsStore: ObservableObject {
 
     // MARK: - YAML Serialization Helpers
 
+    /// The read model for the queue file.
+    ///
+    /// Parsed through `parseTaskBlocks`, the same parser the write path uses,
+    /// so the values a read shows are the values a write persists. The
+    /// previous implementation here was a second, line-oriented parser that
+    /// disagreed with the writer about quoting: it stripped the outer quote
+    /// characters without unescaping `''`, so a task containing an apostrophe
+    /// came back as `It''s`, and the next write emitted `'It''''s'`. Every
+    /// queue mutation doubled every apostrophe in every task, without limit.
+    /// It also matched `status:` at any indent, so a nested `metadata:` decoy
+    /// could hijack a task's own status.
     public nonisolated static func parseTasksYaml(_ text: String) -> [TaskItem] {
-        var items: [TaskItem] = []
-        var currentId: String?
-        var currentTask: String?
-        var currentPriority: TaskPriority = .medium
-        var currentStatus: TaskStatus = .pending
-        var currentLoop: String = "daily-coding.yaml"
-        var currentCreated: String = ""
-        var currentModule: String?
-
-        func flushItem() {
-            if let id = currentId, let task = currentTask {
-                items.append(TaskItem(
-                    id: id,
-                    task: task,
-                    priority: currentPriority,
-                    status: currentStatus,
-                    loopName: currentLoop,
-                    created: currentCreated,
-                    module: currentModule
-                ))
-            }
-            currentId = nil
-            currentTask = nil
-            currentPriority = .medium
-            currentStatus = .pending
-            currentLoop = "daily-coding.yaml"
-            currentCreated = ""
-            currentModule = nil
-        }
-
-        for line in text.split(separator: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("- id:") {
-                flushItem()
-                currentId = trimmed.replacingOccurrences(of: "- id:", with: "")
-                    .trimmingCharacters(in: .whitespaces)
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"\'"))
-            } else if trimmed.hasPrefix("task:") {
-                currentTask = trimmed.replacingOccurrences(of: "task:", with: "")
-                    .trimmingCharacters(in: .whitespaces)
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"\'"))
-            } else if trimmed.hasPrefix("priority:") {
-                let p = trimmed.replacingOccurrences(of: "priority:", with: "").trimmingCharacters(in: .whitespaces)
-                currentPriority = TaskPriority(rawValue: p) ?? .medium
-            } else if trimmed.hasPrefix("status:") {
-                let s = trimmed.replacingOccurrences(of: "status:", with: "").trimmingCharacters(in: .whitespaces)
-                currentStatus = TaskStatus(rawValue: s) ?? .pending
-            } else if trimmed.hasPrefix("loop:") {
-                currentLoop = trimmed.replacingOccurrences(of: "loop:", with: "").trimmingCharacters(in: .whitespaces)
-            } else if trimmed.hasPrefix("created:") {
-                currentCreated = trimmed.replacingOccurrences(of: "created:", with: "")
-                    .trimmingCharacters(in: .whitespaces)
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"\'"))
-            } else if trimmed.hasPrefix("module:") {
-                currentModule = trimmed.replacingOccurrences(of: "module:", with: "")
-                    .trimmingCharacters(in: .whitespaces)
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"\'"))
-            }
-        }
-        flushItem()
-        return items
+        parseTaskBlocks(text)
+            .map(\.item)
+            .filter { !$0.id.isEmpty && !$0.task.isEmpty }
     }
 
     public nonisolated static func serializeTasksYaml(_ items: [TaskItem]) -> String {
@@ -1110,7 +1078,20 @@ public class LoopsStore: ObservableObject {
         var insideMetadata = false
 
         func flush() {
-            if let block = current { blocks.append(block) }
+            if var block = current {
+                // A blank line inside a block falls through to the extras,
+                // because it is not a `key: value` line at the block's depth.
+                // The writer then emits those stored blanks *and* adds its own
+                // separator, so the queue file grew by one blank line per
+                // block boundary — and one more at the end — on every edit.
+                // Trailing blanks are dropped; blanks inside the block are
+                // kept, because they are the user's own layout.
+                while let last = block.extras.last,
+                      last.trimmingCharacters(in: .whitespaces).isEmpty {
+                    block.extras.removeLast()
+                }
+                blocks.append(block)
+            }
             current = nil
         }
 

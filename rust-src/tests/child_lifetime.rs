@@ -242,7 +242,23 @@ fn serve_mlx_termination_takes_the_engine_with_it() {
 
 #[test]
 fn serve_llama_termination_takes_the_engine_with_it() {
-    let harness = Harness::new(env!("CARGO_BIN_EXE_serve-llama"), "llama-server", &[]);
+    // The llama lane defaults to 8081, which is this project's own port. On
+    // a machine with the stack running, `serve-llama` refuses to start on a
+    // port already in use and the test fails for a reason that is not a
+    // product bug. Give it a port that is reserved and released, so it is
+    // free and known to be free.
+    let free = {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve a port");
+        let port = listener.local_addr().expect("reserved address").port();
+        drop(listener);
+        port
+    };
+    let free = free.to_string();
+    let harness = Harness::new(
+        env!("CARGO_BIN_EXE_serve-llama"),
+        "llama-server",
+        &[("LOOP_STUDIO_LLAMA_PORT", &free)],
+    );
     let engine = harness
         .engine_pid()
         .expect("the stub engine must report a pid");
