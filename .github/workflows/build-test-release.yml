@@ -20,10 +20,9 @@ permissions:
 jobs:
   test:
     name: Test
-    # macos-15 defaults to Xcode 16.4, whose toolchain is Swift 6 — the
-    # version the Swift package requires. The macos-14 image defaults to
-    # Xcode 15.4 (Swift 5.10) and is itself being deprecated, so this
-    # moves off it rather than working around it.
+    # macos-15 rather than macos-14: the macos-14 image is itself being
+    # deprecated (unsupported from November), and macos-15 ships the Xcode 26
+    # the Swift app's macOS 26 API needs.
     runs-on: macos-15
     defaults:
       run:
@@ -33,15 +32,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # The Swift package declares `swift-tools-version: 6.0`. Select the
-      # Xcode that ships Swift 6 explicitly rather than inheriting whatever
-      # the image happens to default to — SwiftPM refuses to even parse the
-      # manifest otherwise, and the failure reads as a build error rather
-      # than a toolchain mismatch.
-      - name: Select Xcode (Swift 6)
+      # The Swift package declares `swift-tools-version: 6.0` and uses the
+      # macOS 26 `.glassEffect` refraction API, so it needs the macOS 26 SDK
+      # — Xcode 26 or later. The image's default Xcode is 16.4, whose SDK has
+      # no `glassEffect` at all, and the gate failed with "value of type
+      # 'Self' has no member 'glassEffect'". Select the Xcode explicitly
+      # rather than inheriting whatever the image defaults to.
+      - name: Select Xcode (macOS 26 SDK)
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.4.app
+          sudo xcode-select -s /Applications/Xcode_26.3.app
           swift --version
+          xcodebuild -showsdks | grep -i macos
 
       - name: Setup Rust stable
         uses: dtolnay/rust-toolchain@stable
