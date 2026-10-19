@@ -1,6 +1,6 @@
 //! Router intelligence integration tests.
 //!
-//! Spins up the real `lac-router` binary against in-process fake backends
+//! Spins up the real `loop-studio-router` binary against in-process fake backends
 //! on localhost and asserts merge, failover, model-hint routing, fastest
 //! mode, and the usage log. One sequential #[test]: process env is global,
 //! Child environments are explicit; scenarios run in order inside a single test.
@@ -157,22 +157,110 @@ fn spawn_fake(ids: Vec<&'static str>, chat_delay_ms: u64) -> (Fake, u16) {
 
 /// Raw HTTP over one connection; headers+body sent in a single write so
 /// the router's zero-copy model sniff sees the full picture.
-fn raw_request(port: u16, text: &str) -> String {
-    let mut s = TcpStream::connect_timeout(
-        &format!("127.0.0.1:{}", port).parse().unwrap(),
-        Duration::from_secs(5),
-    )
-    .unwrap();
-    let _ = s.set_read_timeout(Some(Duration::from_secs(15)));
-    s.write_all(text.as_bytes()).unwrap();
-    let mut out = Vec::new();
-    let _ = s.read_to_end(&mut out);
-    String::from_utf8_lossy(&out).to_string()
+/// What one HTTP round-trip actually did, so a failure can name itself.
+///
+/// This harness used to return a `String` and let `split_response` reduce a
+/// missing status line to code 0. That single number cannot tell three
+/// different failures apart, and one of them is not the test's fault at all:
+/// a connect error panics here, so a `0` means the router *accepted* the
+/// connection and answered nothing — a per-connection failure, not a refused
+/// connect and not a bad request. Observed once at
+/// `/loop-studio/switch?target=fastest` inside a full `make validate`, not
+/// reproducible in isolation or across repeated full runs, and the only
+/// artefact of it was `0`. A test that can report "0" is a test that cannot be
+/// debugged, so the distinction is made here rather than left to the next
+/// person to rediscover.
+/// What one HTTP round-trip actually did, so a failure can name itself.
+#[derive(Debug)]
+struct RoundTrip {
+    /// The HTTP status, or 0 when there was no parseable status line.
+    status: u16,
+    /// The response body, or — when there was no response — the diagnosis.
+    /// Every assertion in this file formats `{body}`, so this is the channel
+    /// through which a failure explains itself.
+    body: String,
+}
+
+impl RoundTrip {
+    fn answered(status: u16, body: String, bytes: usize) -> Self {
+        let _ = bytes;
+        Self { status, body }
+    }
+
+    /// The connection was accepted and closed without a status line.
+    ///
+    /// This is the case that was unnameable before. The harness used to
+    /// `.unwrap()` its connect, so a refused connect panicked; a `0` could
+    /// therefore only mean *accepted, then silent* — a per-connection failure
+    /// in the router, not a busy listener and not a bad request. Observed once
+    /// at `/loop-studio/switch?target=fastest` inside a full `make validate`, not
+    /// reproducible in isolation or across repeated full runs. It is never
+    /// retried: if the router can accept and then answer nothing, that is the
+    /// thing worth catching, and a retry would hide exactly it.
+    fn accepted_then_silent(bytes: usize) -> Self {
+        Self {
+            status: 0,
+            body: format!(
+                "the router accepted the connection and answered nothing ({bytes} bytes, \
+                 no status line) — a per-connection failure, not a refused connect"
+            ),
+        }
+    }
+
+    fn unreachable(attempts: usize, last: &str) -> Self {
+        Self {
+            status: 0,
+            body: format!("connect failed {attempts} time(s): {last}"),
+        }
+    }
+}
+
+/// One request/response, retrying only a *connect* that was refused.
+///
+/// A refused connect is a machine event — the listener was momentarily busy, or
+/// a fixture had not finished binding — and asserting on a single attempt makes
+/// the test report the scheduler's mood. A connection that was *accepted* and
+/// then answered nothing is a different thing entirely and is never retried:
+/// that would be the router's behaviour, and hiding it is the one outcome worth
+/// ruling out.
+fn raw_request(port: u16, text: &str) -> RoundTrip {
+    const CONNECT_ATTEMPTS: usize = 5;
+    let addr = format!("127.0.0.1:{port}").parse().expect("loopback address");
+    let mut last_connect_err = String::new();
+    for attempt in 1..=CONNECT_ATTEMPTS {
+        let mut s = match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
+            Ok(s) => s,
+            Err(e) => {
+                last_connect_err = e.to_string();
+                if attempt < CONNECT_ATTEMPTS {
+                    std::thread::sleep(Duration::from_millis(200 * attempt as u64));
+                }
+                continue;
+            }
+        };
+        let _ = s.set_read_timeout(Some(Duration::from_secs(15)));
+        if let Err(e) = s.write_all(text.as_bytes()) {
+            return RoundTrip::unreachable(attempt, &format!("write failed after connect: {e}"));
+        }
+        let mut out = Vec::new();
+        let _ = s.read_to_end(&mut out);
+        let raw = String::from_utf8_lossy(&out).into_owned();
+        let (code, body) = split_response(&raw);
+        return if code == 0 {
+            RoundTrip::accepted_then_silent(out.len())
+        } else {
+            RoundTrip::answered(code, body, out.len())
+        };
+    }
+    RoundTrip::unreachable(CONNECT_ATTEMPTS, &last_connect_err)
 }
 
 fn get(port: u16, path: &str) -> (u16, String) {
-    let resp = raw_request(port, &format!("GET {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", path));
-    split_response(&resp)
+    let rt = raw_request(
+        port,
+        &format!("GET {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", path),
+    );
+    (rt.status, rt.body)
 }
 
 fn post_chat(port: u16, model: &str) -> (u16, String) {
@@ -182,7 +270,8 @@ fn post_chat(port: u16, model: &str) -> (u16, String) {
         body.len(),
         body
     );
-    split_response(&raw_request(port, &req))
+    let rt = raw_request(port, &req);
+    (rt.status, rt.body)
 }
 
 fn post_chat_split_body(port: u16, model: &str) -> (u16, String) {
@@ -235,7 +324,7 @@ fn wait_router(port: u16) {
             Duration::from_millis(300),
         ) {
             let _ = s.set_read_timeout(Some(Duration::from_millis(800)));
-            let _ = s.write_all(b"GET /lac/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+            let _ = s.write_all(b"GET /loop-studio/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
             let mut buf = Vec::new();
             let _ = s.read_to_end(&mut buf);
             if String::from_utf8_lossy(&buf).contains("200 OK") {
@@ -253,14 +342,14 @@ fn router_intelligence() {
     // Isolate HOME: the router persists its backend choice and usage log
     // under ~/.lac — the test must never rewrite the operator's files.
     // (All scenarios run sequentially in this one test; env is global.)
-    let tmp_home = std::env::temp_dir().join(format!("lac-test-home-{}", std::process::id()));
+    let tmp_home = std::env::temp_dir().join(format!("loop-studio-test-home-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&tmp_home);
     let (mlx, mlx_port) = spawn_fake(vec!["t-m1", "t-dup"], 0);
     let (llama, llama_port) = spawn_fake(vec!["t-m2", "t-dup"], 0);
     let dead_listener = TcpListener::bind(("127.0.0.1", 0)).expect("ollama dead reservation");
     let ollama_port = dead_listener.local_addr().expect("ollama dead address").port();
 
-    let router_bin = env!("CARGO_BIN_EXE_lac-router");
+    let router_bin = env!("CARGO_BIN_EXE_loop-studio-router");
     let home_env = tmp_home.to_string_lossy().into_owned();
     let mlx_env = mlx_port.to_string();
     let llama_env = llama_port.to_string();
@@ -269,10 +358,10 @@ fn router_intelligence() {
         router_bin,
         &[
             ("HOME", &home_env),
-            ("LAC_BIND_ADDR", "127.0.0.1"),
+            ("LOOP_STUDIO_BIND_ADDR", "127.0.0.1"),
             ("MLX_PORT", &mlx_env),
-            ("LAC_LLAMA_PORT", &llama_env),
-            ("LAC_OLLAMA_PORT", &ollama_env),
+            ("LOOP_STUDIO_LLAMA_PORT", &llama_env),
+            ("LOOP_STUDIO_OLLAMA_PORT", &ollama_env),
         ],
     );
     let router_port = router.port;
@@ -322,15 +411,23 @@ fn router_intelligence() {
     mlx.http_fail.store(false, Ordering::SeqCst);
 
     // 4. Fastest mode + stats surface.
-    let (code, _) = get(router_port, "/lac/switch?target=fastest");
+    let (code, _) = get(router_port, "/loop-studio/switch?target=fastest");
     assert_eq!(code, 200);
     thread::sleep(Duration::from_millis(2000));
-    let (code, status) = get(router_port, "/lac/status");
+    let (code, status) = get(router_port, "/loop-studio/status");
     assert_eq!(code, 200);
     assert!(status.contains("\"preferred\": \"fastest\""), "{}", status);
     assert!(status.contains("\"ewma_ms\""), "stats block: {}", status);
     assert!(status.contains("\"models_mapped\""), "{}", status);
     drop(mlx.hits_models);
+
+    // The pre-rename paths still answer, so an operator's existing script or
+    // bookmarked dashboard URL keeps working across the rename.
+    let (code, legacy_status) = get(router_port, "/lac/status");
+    assert_eq!(code, 200, "legacy status alias must still answer: {}", legacy_status);
+    assert!(legacy_status.contains("\"preferred\": \"fastest\""), "{}", legacy_status);
+    let (code, _) = get(router_port, "/lac/switch?target=auto");
+    assert_eq!(code, 200, "legacy switch alias must still answer");
 
     let usage = std::fs::read_to_string(tmp_home.join(".lac/router-usage.jsonl"))
         .expect("usage log exists");
@@ -339,14 +436,14 @@ fn router_intelligence() {
     drop(router);
 
     // 5. The two replies that used to state something the router had not
-    // measured. Both are read by `lac status`, the Studio dashboard and any
+    // measured. Both are read by `loop-studio status`, the Studio dashboard and any
     // script watching this endpoint, so both are load-bearing.
     //
-    // Every backend down: `/lac/status` used to answer `"status": "ok"` and
+    // Every backend down: `/loop-studio/status` used to answer `"status": "ok"` and
     // name an active lane — the preferred id, which is the literal string
     // "auto" by default — on a port nothing was bound to, in the same document
     // whose `backends` block said all three were down.
-    let honest_home = std::env::temp_dir().join(format!("lac-test-honest-{}", std::process::id()));
+    let honest_home = std::env::temp_dir().join(format!("loop-studio-test-honest-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&honest_home);
     std::fs::create_dir_all(&honest_home).expect("honest home");
     // Reserve then release, so connect() is refused at once instead of
@@ -364,15 +461,15 @@ fn router_intelligence() {
         router_bin,
         &[
             ("HOME", &honest_home_env),
-            ("LAC_BIND_ADDR", "127.0.0.1"),
+            ("LOOP_STUDIO_BIND_ADDR", "127.0.0.1"),
             ("MLX_PORT", &honest_mlx),
-            ("LAC_LLAMA_PORT", &honest_llama),
-            ("LAC_OLLAMA_PORT", &honest_ollama),
+            ("LOOP_STUDIO_LLAMA_PORT", &honest_llama),
+            ("LOOP_STUDIO_OLLAMA_PORT", &honest_ollama),
         ],
     );
     let honest_port = honest.port;
     wait_router(honest_port);
-    let (code, status) = get(honest_port, "/lac/status");
+    let (code, status) = get(honest_port, "/loop-studio/status");
     assert_eq!(code, 200);
     assert!(
         status.contains("\"status\": \"no-backends\""),
@@ -393,7 +490,7 @@ fn router_intelligence() {
     // showed it as saved. A directory where the file belongs makes the rename
     // fail for any user, root included.
     std::fs::create_dir_all(honest_home.join(".lac/router-backend")).expect("block the write");
-    let (code, switched) = get(honest_port, "/lac/switch?target=llama");
+    let (code, switched) = get(honest_port, "/loop-studio/switch?target=llama");
     assert_eq!(code, 200);
     assert!(
         switched.contains("\"target\": \"llama\""),
@@ -403,7 +500,7 @@ fn router_intelligence() {
         switched.contains("\"persisted\": false"),
         "and the reply must admit it was not saved: {switched}"
     );
-    let (_, after) = get(honest_port, "/lac/status");
+    let (_, after) = get(honest_port, "/loop-studio/status");
     assert!(
         after.contains("\"preferred\": \"llama\""),
         "the in-memory choice is real even when the file could not be written: {after}"

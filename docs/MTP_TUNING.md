@@ -59,9 +59,9 @@ llama-server \
 
 ## 4. Benchmarking MTP Performance
 
-Use the unified `lac bench` command to measure roundtrip latency:
+Use the unified `loop-studio bench` command to measure roundtrip latency:
 ```bash
-lac bench 8000   # Benchmark through router
-lac bench 8080   # Benchmark direct to MLX
-lac bench 8081   # Benchmark direct to llama-server
+loop-studio bench 8000   # Benchmark through router
+loop-studio bench 8080   # Benchmark direct to MLX
+loop-studio bench 8081   # Benchmark direct to llama-server
 ```

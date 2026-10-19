@@ -17,26 +17,26 @@ Also toggles between inference backends:
 
 ## Workflow
 
-### 1. via LAC CLI (Instant Pure Rust Switch)
+### 1. via Loop Studio CLI (Instant Pure Rust Switch)
 
 ```bash
-# Switch gateway preferred backend instantly via native Rust lac CLI:
-lac switch mlx       # Switch to MLX (port :8080, fastest)
-lac switch llama     # Switch to llama-server (port :8081, Q8_0 quality)
-lac switch ollama    # Switch to Ollama (port :11434, fallback)
-lac switch auto      # Dynamic policy-ordered failover
-lac switch fastest   # Lowest measured EWMA latency routing
+# Switch gateway preferred backend instantly via native Rust loop-studio CLI:
+loop-studio switch mlx       # Switch to MLX (port :8080, fastest)
+loop-studio switch llama     # Switch to llama-server (port :8081, Q8_0 quality)
+loop-studio switch ollama    # Switch to Ollama (port :11434, fallback)
+loop-studio switch auto      # Dynamic policy-ordered failover
+loop-studio switch fastest   # Lowest measured EWMA latency routing
 ```
 
-### 2. via LAC Studio (macOS Native App)
+### 2. via Loop Studio (macOS Native App)
 
 - Click the **Model Selector Pill** in the top header or browse the **Hugging Face Model Hub** tab.
 - Click **"Use for Chat"** on any model to instantly retarget inference.
 
-### 3. via Terminal Control Center (`lac-tui`)
+### 3. via Terminal Control Center (`loop-studio-tui`)
 
 ```bash
-lac tui
+loop-studio tui
 # Option 2) Serve menu -> Toggle Q4 / Q8 or switch preferred backend
 ```
 

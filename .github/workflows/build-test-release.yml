@@ -1,4 +1,4 @@
-name: Build, Test & Release LAC Stack
+name: Build, Test & Release Loop Studio Stack
 
 on:
   push:
@@ -46,11 +46,11 @@ jobs:
       - name: Upload release binaries
         uses: actions/upload-artifact@v4
         with:
-          name: lac-release-${{ github.sha }}
+          name: loop-studio-release-${{ github.sha }}
           path: |
-            rust-src/target/release/lac
-            rust-src/target/release/lac-router
-            rust-src/target/release/lac-tui
+            rust-src/target/release/loop-studio
+            rust-src/target/release/loop-studio-router
+            rust-src/target/release/loop-studio-tui
             rust-src/target/release/bootstrap
             rust-src/target/release/serve-mlx
             rust-src/target/release/serve-llama
@@ -69,7 +69,7 @@ jobs:
       - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
-          name: lac-release-${{ github.sha }}
+          name: loop-studio-release-${{ github.sha }}
           path: ./artifacts
 
       - name: Create GitHub Release
@@ -78,7 +78,7 @@ jobs:
           tag_name: v2.8.${{ github.run_number }}
           files: ./artifacts/*
           fail_on_unmatched_files: true
-          name: LAC v2.8 Release
+          name: Loop Studio v2.8 Release
           body: |
             ## What's Changed
 
@@ -93,9 +93,9 @@ jobs:
             - Clean release build, zero errors
 
             ### Binaries
-            - `lac` — CLI orchestrator
-            - `lac-router` — router learning layer
-            - `lac-tui` — TUI interface
+            - `loop-studio` — CLI orchestrator
+            - `loop-studio-router` — router learning layer
+            - `loop-studio-tui` — TUI interface
             - `bootstrap` — mount-gated bootstrap
             - `serve-mlx` — MLX launcher (port-drift, thermal-aware)
             - `serve-llama` — llama-server launcher (thermal context clamp)

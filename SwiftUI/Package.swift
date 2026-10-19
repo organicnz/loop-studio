@@ -4,7 +4,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "LoopLACStudio",
+    name: "LoopStudio",
     platforms: [.macOS(.v13)],
     dependencies: [
         // Dependencies can be added here; we use standard library only for minimal footprint
@@ -13,10 +13,10 @@ let package = Package(
         // Targets consist of a name and a set of source files. Targets can depend on
         // other targets in this package, and dependencies.
         .executableTarget(
-            name: "LoopLACStudio",
+            name: "LoopStudio",
             dependencies: []),
         .testTarget(
-            name: "LoopLACStudioTests",
-            dependencies: ["LoopLACStudio"]),
+            name: "LoopStudioTests",
+            dependencies: ["LoopStudio"]),
     ]
 )

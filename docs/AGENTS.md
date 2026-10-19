@@ -1,4 +1,4 @@
-# AGENTS.md — Operating Rules (LAC, qwen3.8-27B, Apple Silicon)
+# AGENTS.md — Operating Rules (Loop Studio, qwen3.8-27B, Apple Silicon)
 
 Distilled from the Local Agentic Coding Build Plan. This file is read by OpenCode
 as project instructions. Refine it after every failure — treat it as a product.
@@ -23,8 +23,8 @@ as project instructions. Refine it after every failure — treat it as a product
 ## Task discipline
 
 - Scope tasks tightly; chunk them. One well-defined task per loop run.
-- Work from progress files (kanban): `~/todo/lac-tasks.yaml` for queue,
-  `~/todo/lac-loops/*.yaml` for loop definitions.
+- Work from progress files (kanban): `~/todo/loop-studio-tasks.yaml` for queue,
+  `~/todo/loop-studio-loops/*.yaml` for loop definitions.
 - Vague tasks fail — refine before queueing ("fix X in file Y", never "improve auth").
 
 ## Reliability gates (mandatory for multi-file changes)
@@ -57,13 +57,13 @@ as project instructions. Refine it after every failure — treat it as a product
 
 ## Architecture & Tech Stack
 
-- **Backend**: 100% pure native Rust (`rust-src/`). Zero Python and zero shell scripts in the backend path. All binaries (`lac`, `lac-router`, `lac-tui`, `kv-manage`, `serve-mlx`, `serve-llama`, `pull-models`, `bootstrap`) are compiled Rust with zero external crates (standard library only). Hardened with `ignore_sigpipe` and thread `catch_unwind` isolation for an unbreakable local daemon.
-- **Code Assistant**: Integrated both into the pure Rust CLI (`lac code [-f file] "..."`) and the native macOS app with dedicated coding prompts, refactoring, test generation, and diff application.
-- **Client**: Native Apple Silicon macOS app (**LAC Studio** in `SwiftUI/`). Implements Apple Liquid Glass executive design principles, Claude Desktop & Codex layout ergonomics (780pt column, floating elevated composer, sparkle monogram avatar), Code Assistant split canvas (`⌘2`), and LM Studio style Hugging Face Model Hub discovery.
+- **Backend**: 100% pure native Rust (`rust-src/`). Zero Python and zero shell scripts in the backend path. All binaries (`loop-studio`, `loop-studio-router`, `loop-studio-tui`, `kv-manage`, `serve-mlx`, `serve-llama`, `pull-models`, `bootstrap`) are compiled Rust with zero external crates (standard library only). Hardened with `ignore_sigpipe` and thread `catch_unwind` isolation for an unbreakable local daemon.
+- **Code Assistant**: Integrated both into the pure Rust CLI (`loop-studio code [-f file] "..."`) and the native macOS app with dedicated coding prompts, refactoring, test generation, and diff application.
+- **Client**: Native Apple Silicon macOS app (**Loop Studio** in `SwiftUI/`). Implements Apple Liquid Glass executive design principles, Claude Desktop & Codex layout ergonomics (780pt column, floating elevated composer, sparkle monogram avatar), Code Assistant split canvas (`⌘2`), and LM Studio style Hugging Face Model Hub discovery.
 
 ## Calibration
 
 - Local coders are last-gen-flagship, not frontier. Keep an occasional hosted call
   for the hardest 5% — escalate, don't grind.
 - LM Studio is a GUI/manager, not the speed layer — serve through mlx/llama-server.
-- Sandbox OpenClaw hard if used. Hermes (`lac hermes` / `lac worker`: native judgment-augmented queue drain, deterministic fallback) fits solo local coding better.
+- Sandbox OpenClaw hard if used. Hermes (`loop-studio hermes` / `loop-studio worker`: native judgment-augmented queue drain, deterministic fallback) fits solo local coding better.

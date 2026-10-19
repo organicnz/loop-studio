@@ -30,8 +30,8 @@ fn tm_excluded(path: &str) -> bool {
         .unwrap_or(false)
 }
 
-const ZPROFILE_MARKER: &str = "# >>> LAC env (managed by lac bootstrap) >>>";
-const ZPROFILE_END: &str = "# <<< LAC env <<<";
+const ZPROFILE_MARKER: &str = "# >>> Loop Studio env (managed by loop-studio bootstrap) >>>";
+const ZPROFILE_END: &str = "# <<< Loop Studio env <<<";
 
 /// The managed block, and nothing else. Written between the two markers so a
 /// later run can replace exactly this region and never touch a line the user
@@ -158,18 +158,20 @@ fn install_template(src: &Path, dest: &str) -> Result<bool, String> {
 
 fn main() {
     common::ignore_sigpipe();
-    eprintln!("=== LAC bootstrap v2.6 (Rust, idempotent) ===");
-    // `common::home_dir()` falls back to "." when $HOME is unset, which turns
-    // every path below into a relative one. Bootstrap would then create
-    // ./.zprofile and ./.ollama in whatever directory it was invoked from and
-    // report success. Refuse instead: a setup tool with no idea where home is
-    // has nothing useful to do.
-    let home = match env::var("HOME") {
-        Ok(h) if !h.trim().is_empty() => h,
-        _ => {
-            eprintln!("$HOME is not set, so there is no home directory to set up.");
+    eprintln!("=== Loop Studio bootstrap v2.6 (Rust, idempotent) ===");
+    // Every path below is `home_dir() + something`, and `common::home_dir()`
+    // now refuses rather than falling back to "." — a relative path is not a
+    // home directory, it is "wherever this process was launched", and
+    // bootstrap would otherwise create ./.zprofile and ./.ollama in whatever
+    // directory it was invoked from and report success. One rule, from the
+    // shared helper, so the two cannot drift: it used to accept a merely
+    // non-empty $HOME here while the helper required an absolute one.
+    let home = match common::home_dir_from(env::var("HOME").ok().as_deref()) {
+        Ok(home) => home,
+        Err(_) => {
+            eprintln!("$HOME is not set to an absolute path, so there is no home directory to set up.");
             eprintln!("Run this from a login shell, or set HOME first.");
-            std::process::exit(1);
+            std::process::exit(78);
         }
     };
     let root = get_project_root();
@@ -314,7 +316,18 @@ fn main() {
 
     // 8. Kanban templates — never overwrite user edits.
     eprintln!("8. Initializing Kanban task & loop templates...");
-    let loops_dir = format!("{}/todo/lac-loops", home);
+    let loops_dir = format!("{}/todo/loop-studio-loops", home);
+    let old_loops = format!("{}/todo/lac-loops", home);
+    if fs::metadata(&old_loops).is_ok() && fs::metadata(&loops_dir).is_err() {
+        let _ = fs::create_dir_all(&loops_dir);
+        if let Ok(entries) = fs::read_dir(&old_loops) {
+            for entry in entries.flatten() {
+                let dest = format!("{}/{}", loops_dir, entry.file_name().to_string_lossy());
+                let _ = fs::copy(entry.path(), &dest);
+            }
+        }
+        eprintln!("   migrated loops from {}", old_loops);
+    }
     if let Err(e) = fs::create_dir_all(&loops_dir) {
         eprintln!("   FAILED {}: {}", loops_dir, e);
         failures += 1;
@@ -347,25 +360,50 @@ fn main() {
             failures += 1;
         }
     }
-    let task_template = format!("{}/templates/tasks/lac-tasks.yaml", root);
-    let task_dest = format!("{}/todo/lac-tasks.yaml", home);
+    let task_template = format!("{}/templates/tasks/loop-studio-tasks.yaml", root);
+    let task_dest = format!("{}/todo/loop-studio-tasks.yaml", home);
+    let old_task = format!("{}/todo/lac-tasks.yaml", home);
+    if fs::metadata(&old_task).is_ok() && fs::metadata(&task_dest).is_err() {
+        if let Some(parent) = Path::new(&task_dest).parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if fs::copy(&old_task, &task_dest).is_ok() {
+            eprintln!("   migrated task queue from {}", old_task);
+        }
+    }
     if let Some(parent) = Path::new(&task_dest).parent() {
         if let Err(e) = fs::create_dir_all(parent) {
             eprintln!("   FAILED {}: {}", parent.display(), e);
             failures += 1;
         }
     }
-    if fs::metadata(&task_dest).is_err() && Path::new(&task_template).exists() {
-        match install_template(Path::new(&task_template), &task_dest) {
+    // "Keeping existing" is a claim about a file, so it has to be true. The
+    // `else` also caught the case where the destination is *absent* and the
+    // template is *absent* — a sparse clone, or a copy without `templates/` —
+    // and printed "keeping existing task queue: ~/todo/loop-studio-tasks.yaml" for a
+    // file that does not exist, then counted nothing. `loop-studio loop init` reports
+    // the same state correctly as a failure, so the two writers of this one
+    // fact disagreed.
+    match (fs::metadata(&task_dest), Path::new(&task_template).exists()) {
+        (Ok(_), _) => eprintln!("   keeping existing task queue: {}", task_dest),
+        (Err(_), true) => match install_template(Path::new(&task_template), &task_dest) {
             Ok(true) => eprintln!("   installed task queue: {}", task_dest),
-            Ok(false) => eprintln!("   skipped non-file task template: {}", task_template),
+            Ok(false) => {
+                eprintln!("   FAILED task template is not a file: {}", task_template);
+                failures += 1;
+            }
             Err(e) => {
                 eprintln!("   FAILED task queue: {}", e);
                 failures += 1;
             }
+        },
+        (Err(_), false) => {
+            eprintln!(
+                "   FAILED no task queue at {} and no template at {} to install from",
+                task_dest, task_template
+            );
+            failures += 1;
         }
-    } else {
-        eprintln!("   keeping existing task queue: {}", task_dest);
     }
 
     // 9. Shell env hooks (the docs always promised these).
@@ -384,29 +422,80 @@ fn main() {
         warns += 1;
     }
 
-    if failures == 0 && warns == 0 {
-        eprintln!("=== LAC bootstrap complete: all green ===");
-    } else if failures == 0 {
-        eprintln!("=== LAC bootstrap complete with {} warning(s) (see above) ===", warns);
-    } else {
-        // Never "all green" with a failed step, and never exit 0: `make
-        // install` chains on this, and a zero would carry a half-configured
-        // machine forward as a configured one.
-        eprintln!(
-            "=== LAC bootstrap finished with {} failure(s) and {} warning(s) — see above ===",
-            failures, warns
-        );
-        std::process::exit(1);
+    match bootstrap_verdict(failures, warns) {
+        BootstrapVerdict::Green => eprintln!("=== Loop Studio bootstrap complete: all green ==="),
+        BootstrapVerdict::Warnings => {
+            eprintln!("=== Loop Studio bootstrap complete with {} warning(s) (see above) ===", warns);
+            std::process::exit(2);
+        }
+        BootstrapVerdict::Failed => {
+            eprintln!(
+                "=== Loop Studio bootstrap finished with {} failure(s) and {} warning(s) — see above ===",
+                failures, warns
+            );
+            std::process::exit(1);
+        }
     }
+}
+
+/// The exit status a bootstrap run reports, decided once.
+///
+/// Split out because "warn-only is still a nonzero exit" is a rule about what
+/// a *caller* can conclude, and it is a rule that decays: it held for the
+/// `failures` arm, whose comment said so, and quietly did not hold for the
+/// `warns` arm nine steps above it.
+fn bootstrap_verdict(failures: u32, warns: u32) -> BootstrapVerdict {
+    match (failures, warns) {
+        (0, 0) => BootstrapVerdict::Green,
+        (0, _) => BootstrapVerdict::Warnings,
+        _ => BootstrapVerdict::Failed,
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum BootstrapVerdict {
+    Green,
+    Warnings,
+    Failed,
 }
 
 #[cfg(test)]
 mod tests {
+    // A `#[test]` that loses its attribute is valid Rust that never runs:
+    // the suite goes one test quieter and stays green. Fail the build instead.
+    #![deny(dead_code)]
+
     use super::*;
+
+    /// A run that only warned is not a configured machine.
+    ///
+    /// Nine of bootstrap's ten steps can only ever increment `warns` — Homebrew,
+    /// rustc, uv, mise, the model dirs, the ollama symlink, the Time Machine
+    /// exclusion — and the `failures == 0` arm fell off the end of `main` and
+    /// exited 0. So on a fresh Mac with no `brew`, `loop-studio bootstrap` printed
+    /// "complete with 7 warning(s)" and returned success, and `make bootstrap`
+    /// could not see it. The file's own comment, three lines below that arm,
+    /// said a zero would "carry a half-configured machine forward as a
+    /// configured one" — which is why the rule held for `failures` and decayed
+    /// for `warns`.
+    ///
+    /// Distinct nonzero codes so a caller can tell "not configured" from
+    /// "broken" without parsing stdout, which is the whole point of having an
+    /// exit code.
+    #[test]
+    fn a_warning_only_bootstrap_is_not_a_configured_machine() {
+        assert_eq!(bootstrap_verdict(0, 0), BootstrapVerdict::Green);
+        assert_ne!(bootstrap_verdict(0, 1), BootstrapVerdict::Green);
+        assert_ne!(bootstrap_verdict(0, 9), BootstrapVerdict::Green);
+        assert_eq!(bootstrap_verdict(0, 7), BootstrapVerdict::Warnings);
+        // A failure outranks a warning, and is a different code.
+        assert_eq!(bootstrap_verdict(1, 0), BootstrapVerdict::Failed);
+        assert_eq!(bootstrap_verdict(3, 2), BootstrapVerdict::Failed);
+    }
 
     fn temp_zprofile(tag: &str) -> String {
         let path = std::env::temp_dir().join(format!(
-            "lac-test-zprofile-{}-{tag}",
+            "loop-studio-test-zprofile-{}-{tag}",
             std::process::id()
         ));
         let _ = fs::remove_file(&path);
@@ -526,7 +615,7 @@ mod tests {
         // A directory where the file should be: every write fails, and this
         // is the case that used to print a warning and then let the run
         // continue to "all green".
-        let dir = std::env::temp_dir().join(format!("lac-test-zpdir-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("loop-studio-test-zpdir-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("mkdir");
         let blocked = dir.join(".zprofile");
@@ -542,7 +631,7 @@ mod tests {
 
     #[test]
     fn template_install_reports_what_actually_happened() {
-        let base = std::env::temp_dir().join(format!("lac-test-tmpl-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("loop-studio-test-tmpl-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(base.join("nested")).expect("mkdir");
         let file = base.join("loop.yaml");

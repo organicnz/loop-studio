@@ -1,9 +1,9 @@
-//! Remote-auth regression tests for `lac-router` v2.8.
+//! Remote-auth regression tests for `loop-studio-router` v2.8.
 //!
 //! Covers the fail-closed contract from docs/ARCHITECTURE.md:
-//!   1. non-loopback bind (`LAC_BIND_ADDR=0.0.0.0`) without `LAC_API_TOKEN`
+//!   1. non-loopback bind (`LOOP_STUDIO_BIND_ADDR=0.0.0.0`) without `LOOP_STUDIO_API_TOKEN`
 //!      refuses to start (exit 1, "Refusing" on stderr);
-//!   2. loopback bind without a token stays open (`GET /lac/status` -> 200).
+//!   2. loopback bind without a token stays open (`GET /loop-studio/status` -> 200).
 //! Plus the browser-facing gates, which are a second fail-closed contract:
 //!   3. an un-allow-listed `Origin` is refused (403) and a rebound `Host` is
 //!      refused (421), while native clients and allow-listed ones still work.
@@ -62,7 +62,7 @@ fn wait_status(port: u16, timeout: Duration) -> bool {
             Duration::from_millis(300),
         ) {
             s.set_read_timeout(Some(Duration::from_millis(2500))).ok();
-            let _ = s.write_all(b"GET /lac/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+            let _ = s.write_all(b"GET /loop-studio/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
             let mut buf = Vec::new();
             let _ = s.read_to_end(&mut buf);
             if String::from_utf8_lossy(&buf).contains("200 OK") {
@@ -83,7 +83,7 @@ fn request_status(port: u16, authorization: Option<&str>, forwarded: bool) -> Op
         .unwrap_or_default();
     let forwarded = if forwarded { "X-Forwarded-For: 100.64.0.5\r\n" } else { "" };
     let request = format!(
-        "GET /lac/status HTTP/1.1\r\nHost: localhost\r\n{}{}Connection: close\r\n\r\n",
+        "GET /loop-studio/status HTTP/1.1\r\nHost: localhost\r\n{}{}Connection: close\r\n\r\n",
         forwarded, auth
     );
     stream.write_all(request.as_bytes()).ok()?;
@@ -106,7 +106,7 @@ fn request_with_headers(port: u16, extra: &str) -> Option<u16> {
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()?;
     stream.set_read_timeout(Some(Duration::from_millis(2500))).ok()?;
     let request = format!(
-        "GET /lac/status HTTP/1.1\r\nHost: localhost\r\n{}Connection: close\r\n\r\n",
+        "GET /loop-studio/status HTTP/1.1\r\nHost: localhost\r\n{}Connection: close\r\n\r\n",
         extra
     );
     stream.write_all(request.as_bytes()).ok()?;
@@ -124,9 +124,9 @@ fn request_with_headers(port: u16, extra: &str) -> Option<u16> {
 #[test]
 fn remote_auth_fail_closed_and_loopback_open() {
     let _port_lock = support::PortLock::acquire();
-    let tmp_home = std::env::temp_dir().join(format!("lac-test-auth-{}", std::process::id()));
+    let tmp_home = std::env::temp_dir().join(format!("loop-studio-test-auth-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&tmp_home);
-    let router_bin = env!("CARGO_BIN_EXE_lac-router");
+    let router_bin = env!("CARGO_BIN_EXE_loop-studio-router");
     let dead_listener = TcpListener::bind(("127.0.0.1", 0)).expect("dead backend reservation");
     let dead_port = dead_listener.local_addr().expect("dead backend address").port();
     let dead_env = dead_port.to_string();
@@ -138,11 +138,11 @@ fn remote_auth_fail_closed_and_loopback_open() {
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", &home_env)
-        .env("LAC_BIND_ADDR", "0.0.0.0")
-        .env("LAC_ROUTER_PORT", "0")
+        .env("LOOP_STUDIO_BIND_ADDR", "0.0.0.0")
+        .env("LOOP_STUDIO_ROUTER_PORT", "ephemeral")
         .env("MLX_PORT", &dead_env)
-        .env("LAC_LLAMA_PORT", &dead_env)
-        .env("LAC_OLLAMA_PORT", &dead_env);
+        .env("LOOP_STUDIO_LLAMA_PORT", &dead_env)
+        .env("LOOP_STUDIO_OLLAMA_PORT", &dead_env);
     let out = refusal.output().expect("router binary runs");
     assert_eq!(out.status.code(), Some(1), "non-loopback bind without token must exit 1");
     assert!(
@@ -156,24 +156,24 @@ fn remote_auth_fail_closed_and_loopback_open() {
         router_bin,
         &[
             ("HOME", &home_env),
-            ("LAC_BIND_ADDR", "127.0.0.1"),
+            ("LOOP_STUDIO_BIND_ADDR", "127.0.0.1"),
             ("MLX_PORT", &dead_env),
-            ("LAC_LLAMA_PORT", &dead_env),
-            ("LAC_OLLAMA_PORT", &dead_env),
+            ("LOOP_STUDIO_LLAMA_PORT", &dead_env),
+            ("LOOP_STUDIO_OLLAMA_PORT", &dead_env),
         ],
     );
     let ok = wait_status(open_router.port, Duration::from_secs(15));
-    assert!(ok, "loopback without token must serve /lac/status 200");
+    assert!(ok, "loopback without token must serve /loop-studio/status 200");
 
     let token_router = support::spawn_router(
         router_bin,
         &[
             ("HOME", &home_env),
-            ("LAC_BIND_ADDR", "127.0.0.1"),
-            ("LAC_API_TOKEN", "test-secret"),
+            ("LOOP_STUDIO_BIND_ADDR", "127.0.0.1"),
+            ("LOOP_STUDIO_API_TOKEN", "test-secret"),
             ("MLX_PORT", &dead_env),
-            ("LAC_LLAMA_PORT", &dead_env),
-            ("LAC_OLLAMA_PORT", &dead_env),
+            ("LOOP_STUDIO_LLAMA_PORT", &dead_env),
+            ("LOOP_STUDIO_OLLAMA_PORT", &dead_env),
         ],
     );
     let token_port = token_router.port;
@@ -233,11 +233,11 @@ fn remote_auth_fail_closed_and_loopback_open() {
         router_bin,
         &[
             ("HOME", &home_env),
-            ("LAC_BIND_ADDR", "0.0.0.0"),
-            ("LAC_API_TOKEN", "test-secret"),
+            ("LOOP_STUDIO_BIND_ADDR", "0.0.0.0"),
+            ("LOOP_STUDIO_API_TOKEN", "test-secret"),
             ("MLX_PORT", &dead_env),
-            ("LAC_LLAMA_PORT", &dead_env),
-            ("LAC_OLLAMA_PORT", &dead_env),
+            ("LOOP_STUDIO_LLAMA_PORT", &dead_env),
+            ("LOOP_STUDIO_OLLAMA_PORT", &dead_env),
         ],
     );
     let remote_port = remote_router.port;
@@ -262,8 +262,8 @@ fn remote_auth_fail_closed_and_loopback_open() {
 ///
 ///   * **Drive-by CORS** — the responses used to carry
 ///     `Access-Control-Allow-Origin: *`, so a page on any origin could
-///     `fetch` the gateway and *read* the reply: `/lac/status` (backend
-///     topology, tailnet addresses, measured latency), `/lac/switch` (which
+///     `fetch` the gateway and *read* the reply: `/loop-studio/status` (backend
+///     topology, tailnet addresses, measured latency), `/loop-studio/switch` (which
 ///     backend the gateway uses), and the completions themselves.
 ///   * **DNS rebinding** — the attacker rebinds their domain to 127.0.0.1, at
 ///     which point the browser considers the gateway *same-origin*: no
@@ -275,9 +275,9 @@ fn remote_auth_fail_closed_and_loopback_open() {
 #[test]
 fn browser_origins_and_rebound_hosts_are_refused() {
     let _port_lock = support::PortLock::acquire();
-    let tmp_home = std::env::temp_dir().join(format!("lac-test-browser-{}", std::process::id()));
+    let tmp_home = std::env::temp_dir().join(format!("loop-studio-test-browser-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&tmp_home);
-    let router_bin = env!("CARGO_BIN_EXE_lac-router");
+    let router_bin = env!("CARGO_BIN_EXE_loop-studio-router");
     let dead = dead_port().to_string();
     let home_env = tmp_home.to_string_lossy().into_owned();
 
@@ -285,16 +285,16 @@ fn browser_origins_and_rebound_hosts_are_refused() {
         router_bin,
         &[
             ("HOME", &home_env),
-            ("LAC_BIND_ADDR", "127.0.0.1"),
+            ("LOOP_STUDIO_BIND_ADDR", "127.0.0.1"),
             ("MLX_PORT", &dead),
-            ("LAC_LLAMA_PORT", &dead),
-            ("LAC_OLLAMA_PORT", &dead),
+            ("LOOP_STUDIO_LLAMA_PORT", &dead),
+            ("LOOP_STUDIO_OLLAMA_PORT", &dead),
         ],
     );
     let port = router.port;
     assert!(
         wait_status(port, Duration::from_secs(15)),
-        "router must serve /lac/status to a native client"
+        "router must serve /loop-studio/status to a native client"
     );
 
     // --- the native client path, which must not regress -------------------
@@ -306,7 +306,7 @@ fn browser_origins_and_rebound_hosts_are_refused() {
         "[::1]:8000".to_string(),
     ] {
         let request =
-            format!("GET /lac/status HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+            format!("GET /loop-studio/status HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
         let (status, head, body) = raw_request(port, &request);
         assert_eq!(status, 200, "Host: {host} must be served: {head}");
         // The real status document, not a refusal. Its `status` field is not
@@ -315,7 +315,7 @@ fn browser_origins_and_rebound_hosts_are_refused() {
         // `no-backends` — the honesty this suite is not about, and which
         // `router_intel` pins directly.
         assert!(
-            body.contains("\"router\": \"lac-router") && body.contains("\"backends\""),
+            body.contains("\"router\": \"loop-studio-router") && body.contains("\"backends\""),
             "Host: {host} must get the real status body: {body}"
         );
         // The load-bearing assertion for every native client: no CORS header
@@ -328,14 +328,14 @@ fn browser_origins_and_rebound_hosts_are_refused() {
     // HTTP/1.0 sends no Host at all, and every browser sends one, so its
     // absence is not a rebinding vector.
     assert_eq!(
-        status_of(port, "GET /lac/status HTTP/1.0\r\nConnection: close\r\n\r\n"),
+        status_of(port, "GET /loop-studio/status HTTP/1.0\r\nConnection: close\r\n\r\n"),
         200
     );
 
     // --- drive-by CORS: refused, and unreadable ---------------------------
     let (status, head, body) = raw_request(
         port,
-        "GET /lac/status HTTP/1.1\r\nHost: localhost\r\nOrigin: https://evil.example\r\nConnection: close\r\n\r\n",
+        "GET /loop-studio/status HTTP/1.1\r\nHost: localhost\r\nOrigin: https://evil.example\r\nConnection: close\r\n\r\n",
     );
     assert_eq!(status, 403, "an un-allow-listed Origin must be refused: {head}");
     assert!(
@@ -353,7 +353,7 @@ fn browser_origins_and_rebound_hosts_are_refused() {
     assert_eq!(
         status_of(
             port,
-            "GET /lac/switch?target=ollama HTTP/1.1\r\nHost: localhost\r\nOrigin: https://evil.example\r\nConnection: close\r\n\r\n"
+            "GET /loop-studio/switch?target=ollama HTTP/1.1\r\nHost: localhost\r\nOrigin: https://evil.example\r\nConnection: close\r\n\r\n"
         ),
         403,
         "a browser must not be able to switch the backend"
@@ -361,11 +361,55 @@ fn browser_origins_and_rebound_hosts_are_refused() {
     // And it really did not switch: the preference is still auto.
     let (_, _, after) = raw_request(
         port,
-        "GET /lac/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        "GET /loop-studio/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(
         after.contains("\"preferred\": \"auto\""),
-        "the refused /lac/switch must have changed nothing: {after}"
+        "the refused /loop-studio/switch must have changed nothing: {after}"
+    );
+
+    // The same drive-by without an `Origin`, which is the shape that actually
+    // gets through: a `mode: "no-cors"` subresource load is not a CORS request,
+    // so the browser appends no preflight and no `Origin`. Nothing above can
+    // see it, and `Sec-Fetch-Site` is the only header left that says where the
+    // request came from.
+    assert_eq!(
+        status_of(
+            port,
+            "GET /loop-studio/switch?target=ollama HTTP/1.1\r\nHost: localhost\r\nSec-Fetch-Site: cross-site\r\nConnection: close\r\n\r\n"
+        ),
+        403,
+        "a cross-site subresource load must not be able to switch the backend"
+    );
+    let (_, _, after) = raw_request(
+        port,
+        "GET /loop-studio/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        after.contains("\"preferred\": \"auto\""),
+        "the originless cross-site /loop-studio/switch must have changed nothing: {after}"
+    );
+
+    // The gate must cost the native callers nothing, so the negative case above
+    // is only meaningful if the positive one still works. curl, `loop-studio` and the
+    // TUI send no `Sec-Fetch-Site` at all, and a same-origin fetch sends
+    // `same-origin`; both must still be served. `auto` is used as the target so
+    // this leaves the preference where the assertions above expect it.
+    assert_eq!(
+        status_of(
+            port,
+            "GET /loop-studio/switch?target=auto HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        ),
+        200,
+        "a native client with no Sec-Fetch-Site must still be able to switch"
+    );
+    assert_eq!(
+        status_of(
+            port,
+            "GET /loop-studio/switch?target=auto HTTP/1.1\r\nHost: localhost\r\nSec-Fetch-Site: same-origin\r\nConnection: close\r\n\r\n"
+        ),
+        200,
+        "a same-origin fetch must still be able to switch"
     );
 
     // The preflight is refused by the same allow-list, so the browser never
@@ -382,7 +426,7 @@ fn browser_origins_and_rebound_hosts_are_refused() {
     assert_eq!(
         status_of(
             port,
-            "GET /lac/status HTTP/1.1\r\nHost: localhost\r\nOrigin: null\r\nConnection: close\r\n\r\n"
+            "GET /loop-studio/status HTTP/1.1\r\nHost: localhost\r\nOrigin: null\r\nConnection: close\r\n\r\n"
         ),
         403
     );
@@ -391,7 +435,7 @@ fn browser_origins_and_rebound_hosts_are_refused() {
     let (status, head, body) = raw_request(
         port,
         &format!(
-            "POST /lac/switch?target=ollama HTTP/1.1\r\nHost: evil.example:{port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            "POST /loop-studio/switch?target=ollama HTTP/1.1\r\nHost: evil.example:{port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         ),
     );
     assert_eq!(
@@ -401,11 +445,11 @@ fn browser_origins_and_rebound_hosts_are_refused() {
     assert!(!body.contains("switched"), "no state may change: {body}");
     let (_, _, after) = raw_request(
         port,
-        "GET /lac/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        "GET /loop-studio/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(
         after.contains("\"preferred\": \"auto\""),
-        "the rebound /lac/switch must have changed nothing: {after}"
+        "the rebound /loop-studio/switch must have changed nothing: {after}"
     );
 
     // A second Host must not be able to contradict the first, in either
@@ -415,7 +459,7 @@ fn browser_origins_and_rebound_hosts_are_refused() {
         status_of(
             port,
             &format!(
-                "GET /lac/status HTTP/1.1\r\nHost: evil.example\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+                "GET /loop-studio/status HTTP/1.1\r\nHost: evil.example\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
             )
         ),
         421
@@ -423,7 +467,7 @@ fn browser_origins_and_rebound_hosts_are_refused() {
     assert_eq!(
         status_of(
             port,
-            &format!("GET /lac/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nHost: evil.example\r\nConnection: close\r\n\r\n")
+            &format!("GET /loop-studio/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nHost: evil.example\r\nConnection: close\r\n\r\n")
         ),
         200
     );
@@ -439,9 +483,9 @@ fn browser_origins_and_rebound_hosts_are_refused() {
 #[test]
 fn operator_allowlists_and_a_token_reopen_exactly_what_they_name() {
     let _port_lock = support::PortLock::acquire();
-    let tmp_home = std::env::temp_dir().join(format!("lac-test-allow-{}", std::process::id()));
+    let tmp_home = std::env::temp_dir().join(format!("loop-studio-test-allow-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&tmp_home);
-    let router_bin = env!("CARGO_BIN_EXE_lac-router");
+    let router_bin = env!("CARGO_BIN_EXE_loop-studio-router");
     let dead = dead_port().to_string();
     let home_env = tmp_home.to_string_lossy().into_owned();
 
@@ -450,11 +494,11 @@ fn operator_allowlists_and_a_token_reopen_exactly_what_they_name() {
         router_bin,
         &[
             ("HOME", &home_env),
-            ("LAC_BIND_ADDR", "127.0.0.1"),
-            ("LAC_ALLOWED_HOSTS", "studio.local, box.tail1234.ts.net"),
+            ("LOOP_STUDIO_BIND_ADDR", "127.0.0.1"),
+            ("LOOP_STUDIO_ALLOWED_HOSTS", "studio.local, box.tail1234.ts.net"),
             ("MLX_PORT", &dead),
-            ("LAC_LLAMA_PORT", &dead),
-            ("LAC_OLLAMA_PORT", &dead),
+            ("LOOP_STUDIO_LLAMA_PORT", &dead),
+            ("LOOP_STUDIO_OLLAMA_PORT", &dead),
         ],
     );
     let hosts_port = hosts_router.port;
@@ -469,7 +513,7 @@ fn operator_allowlists_and_a_token_reopen_exactly_what_they_name() {
         "box.tail1234.ts.net:8000",
     ] {
         let request =
-            format!("GET /lac/status HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+            format!("GET /loop-studio/status HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
         assert_eq!(
             status_of(hosts_port, &request),
             200,
@@ -483,7 +527,7 @@ fn operator_allowlists_and_a_token_reopen_exactly_what_they_name() {
         "not-studio.local",
     ] {
         let request =
-            format!("GET /lac/status HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+            format!("GET /loop-studio/status HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
         assert_eq!(
             status_of(hosts_port, &request),
             421,
@@ -497,14 +541,14 @@ fn operator_allowlists_and_a_token_reopen_exactly_what_they_name() {
         router_bin,
         &[
             ("HOME", &home_env),
-            ("LAC_BIND_ADDR", "127.0.0.1"),
+            ("LOOP_STUDIO_BIND_ADDR", "127.0.0.1"),
             (
-                "LAC_ALLOWED_ORIGINS",
+                "LOOP_STUDIO_ALLOWED_ORIGINS",
                 "https://studio.example,http://localhost:5173",
             ),
             ("MLX_PORT", &dead),
-            ("LAC_LLAMA_PORT", &dead),
-            ("LAC_OLLAMA_PORT", &dead),
+            ("LOOP_STUDIO_LLAMA_PORT", &dead),
+            ("LOOP_STUDIO_OLLAMA_PORT", &dead),
         ],
     );
     let origin_port = origin_router.port;
@@ -514,12 +558,12 @@ fn operator_allowlists_and_a_token_reopen_exactly_what_they_name() {
     );
     for origin in ["https://studio.example", "http://localhost:5173"] {
         let request = format!(
-            "GET /lac/status HTTP/1.1\r\nHost: localhost\r\nOrigin: {origin}\r\nConnection: close\r\n\r\n"
+            "GET /loop-studio/status HTTP/1.1\r\nHost: localhost\r\nOrigin: {origin}\r\nConnection: close\r\n\r\n"
         );
         let (status, head, body) = raw_request(origin_port, &request);
         assert_eq!(status, 200, "allow-listed origin {origin}: {head}");
         assert!(
-            body.contains("\"router\": \"lac-router") && body.contains("\"backends\""),
+            body.contains("\"router\": \"loop-studio-router") && body.contains("\"backends\""),
             "{origin}: {body}"
         );
         // Its own value back, never a wildcard the router picked, plus Vary
@@ -559,7 +603,7 @@ fn operator_allowlists_and_a_token_reopen_exactly_what_they_name() {
         "http://studio.example",
     ] {
         let request = format!(
-            "GET /lac/status HTTP/1.1\r\nHost: localhost\r\nOrigin: {origin}\r\nConnection: close\r\n\r\n"
+            "GET /loop-studio/status HTTP/1.1\r\nHost: localhost\r\nOrigin: {origin}\r\nConnection: close\r\n\r\n"
         );
         assert_eq!(
             status_of(origin_port, &request),
@@ -577,11 +621,11 @@ fn operator_allowlists_and_a_token_reopen_exactly_what_they_name() {
         router_bin,
         &[
             ("HOME", &home_env),
-            ("LAC_BIND_ADDR", "127.0.0.1"),
-            ("LAC_API_TOKEN", "test-secret"),
+            ("LOOP_STUDIO_BIND_ADDR", "127.0.0.1"),
+            ("LOOP_STUDIO_API_TOKEN", "test-secret"),
             ("MLX_PORT", &dead),
-            ("LAC_LLAMA_PORT", &dead),
-            ("LAC_OLLAMA_PORT", &dead),
+            ("LOOP_STUDIO_LLAMA_PORT", &dead),
+            ("LOOP_STUDIO_OLLAMA_PORT", &dead),
         ],
     );
     let token_port = token_router.port;
@@ -590,7 +634,7 @@ fn operator_allowlists_and_a_token_reopen_exactly_what_they_name() {
         && status_of(
             token_port,
             &format!(
-                "GET /lac/status HTTP/1.1\r\nHost: mac.tail1234.ts.net:{token_port}\r\nAuthorization: Bearer test-secret\r\nConnection: close\r\n\r\n"
+                "GET /loop-studio/status HTTP/1.1\r\nHost: mac.tail1234.ts.net:{token_port}\r\nAuthorization: Bearer test-secret\r\nConnection: close\r\n\r\n"
             ),
         ) != 200
     {
@@ -600,7 +644,7 @@ fn operator_allowlists_and_a_token_reopen_exactly_what_they_name() {
         status_of(
             token_port,
             &format!(
-                "GET /lac/status HTTP/1.1\r\nHost: mac.tail1234.ts.net:{token_port}\r\nAuthorization: Bearer test-secret\r\nConnection: close\r\n\r\n"
+                "GET /loop-studio/status HTTP/1.1\r\nHost: mac.tail1234.ts.net:{token_port}\r\nAuthorization: Bearer test-secret\r\nConnection: close\r\n\r\n"
             )
         ),
         200,
@@ -611,7 +655,7 @@ fn operator_allowlists_and_a_token_reopen_exactly_what_they_name() {
     assert_eq!(
         status_of(
             token_port,
-            &format!("GET /lac/status HTTP/1.1\r\nHost: mac.tail1234.ts.net:{token_port}\r\nConnection: close\r\n\r\n")
+            &format!("GET /loop-studio/status HTTP/1.1\r\nHost: mac.tail1234.ts.net:{token_port}\r\nConnection: close\r\n\r\n")
         ),
         421,
         "no token means no DNS-named Host"
@@ -621,18 +665,18 @@ fn operator_allowlists_and_a_token_reopen_exactly_what_they_name() {
         status_of(
             token_port,
             &format!(
-                "GET /lac/status HTTP/1.1\r\nHost: mac.tail1234.ts.net:{token_port}\r\nAuthorization: Bearer wrong\r\nConnection: close\r\n\r\n"
+                "GET /loop-studio/status HTTP/1.1\r\nHost: mac.tail1234.ts.net:{token_port}\r\nAuthorization: Bearer wrong\r\nConnection: close\r\n\r\n"
             )
         ),
         421,
         "a wrong token is not proof of anything"
     );
     // And a token still does not buy a browser origin: that is the
-    // operator's explicit decision, made with LAC_ALLOWED_ORIGINS.
+    // operator's explicit decision, made with LOOP_STUDIO_ALLOWED_ORIGINS.
     assert_eq!(
         status_of(
             token_port,
-            "GET /lac/status HTTP/1.1\r\nHost: localhost\r\nOrigin: https://evil.example\r\nAuthorization: Bearer test-secret\r\nConnection: close\r\n\r\n"
+            "GET /loop-studio/status HTTP/1.1\r\nHost: localhost\r\nOrigin: https://evil.example\r\nAuthorization: Bearer test-secret\r\nConnection: close\r\n\r\n"
         ),
         403
     );

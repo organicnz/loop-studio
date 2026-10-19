@@ -4,7 +4,7 @@
 //! and hands back only an `ExitStatus`. The parent was left with no pid to
 //! signal, so `kill -TERM serve-mlx` killed the wrapper and left
 //! `mlx_lm.server` running: still holding its port, still resident with the
-//! model's weights, and invisible to `lac ps`. The next start found the port
+//! model's weights, and invisible to `loop-studio ps`. The next start found the port
 //! taken, drifted to 8082, and loaded a *second* copy of the model — on the
 //! host this suite warns about at 32 GiB.
 //!
@@ -117,7 +117,7 @@ struct Harness {
 impl Harness {
     fn new(binary: &str, engine: &str, extra_env: &[(&str, &str)]) -> Self {
         let dir = std::env::temp_dir().join(format!(
-            "lac-test-child-{}-{engine}",
+            "loop-studio-test-child-{}-{engine}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -197,7 +197,7 @@ fn serve_mlx_termination_takes_the_engine_with_it() {
     let harness = Harness::new(
         env!("CARGO_BIN_EXE_serve-mlx"),
         "mlx_lm.server",
-        &[("LAC_ALLOW_MLX", "1")],
+        &[("LOOP_STUDIO_ALLOW_MLX", "1")],
     );
     let engine = harness
         .engine_pid()
@@ -265,10 +265,10 @@ fn serve_llama_termination_takes_the_engine_with_it() {
 
 #[test]
 fn a_signal_during_backoff_does_not_relaunch_the_engine() {
-    // The retry loop sleeps up to 60s between launches. A `lac stop` landing
+    // The retry loop sleeps up to 60s between launches. A `loop-studio stop` landing
     // in that window used to be ignored, and the lane came back after the
     // operator had asked for it to be down.
-    let dir = std::env::temp_dir().join(format!("lac-test-backoff-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("loop-studio-test-backoff-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("home")).expect("home");
     let _ = stub_engine(&dir, "mlx_lm.server");
@@ -284,7 +284,7 @@ fn a_signal_during_backoff_does_not_relaunch_the_engine() {
         .env("PATH", format!("{}/bin:/usr/bin:/bin", dir.display()))
         .env("HOME", dir.join("home"))
         .env("STUB_PIDFILE", &pidfile)
-        .env("LAC_ALLOW_MLX", "1")
+        .env("LOOP_STUDIO_ALLOW_MLX", "1")
         .env("LAUNCHDAEMON", "1")
         .env("MLX_PORT", "8080")
         .stdout(Stdio::null())

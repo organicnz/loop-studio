@@ -66,7 +66,7 @@ Default worktree base directory can be set in `opencode.jsonc`:
 Or override per-skill:
 
 ```
-opencode2 run 'Use the worktree-fanout skill --base /Users/organic/work/AI/LAC/worktrees'
+opencode2 run 'Use the worktree-fanout skill --base /Users/organic/work/AI/loop-studio/worktrees'
 ```
 
 ## Safety

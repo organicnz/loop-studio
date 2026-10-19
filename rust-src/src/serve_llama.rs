@@ -2,9 +2,9 @@
 //!
 //! v2.6: thermal probed once (old code spawned pmset 3x and double-
 //! shrank Fair 8192->4096 by accident), port overridable via
-//! LAC_LLAMA_PORT, binary/model preflight with actionable errors,
+//! LOOP_STUDIO_LLAMA_PORT, binary/model preflight with actionable errors,
 //! context clamped to a sane range, and a readiness prober thread so
-//! `lac status` stops racing server boot.
+//! `loop-studio status` stops racing server boot.
 
 mod common;
 
@@ -21,19 +21,34 @@ fn port_in_use(port: u16) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_ok()
 }
 
+/// Where this lane binds.
+///
+/// This was a fourth definition of the same port — a bare `parse()`, zero
+/// included — while `common::llama_port()` (the reader the router, the TUI,
+/// `loop-studio status` and Studio all use) had its own. With `LOOP_STUDIO_LLAMA_PORT=0` this
+/// handed `--port 0` to the engine, so the OS assigned a random port, the
+/// wrapper published nothing, and every reader looked at 0: a lane that was
+/// serving and could not be found. The writer now calls the reader, the same
+/// delegation `serve-mlx` already makes for `MLX_PORT`.
 fn server_port() -> u16 {
-    env::var("LAC_LLAMA_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(8081)
+    common::llama_port()
 }
 
 /// Context default for one thermal reading. Fair/Critical shrink the
 /// window so the server stays under the throttle threshold.
-fn thermal_default_context(thermal: &str) -> i32 {
+///
+/// `None` — the probe could not answer — keeps the unconstrained default. The
+/// probe used to run `pmset -g thermals`, which pmset rejects, so *every*
+/// host arrived here as "Nominal" and a machine actively throttling was given
+/// the largest window; that is the failure this argument can now express
+/// honestly, because a missing reading is no longer a word. An absent reading
+/// is not evidence of heat, and treating it as evidence of headroom would be
+/// the same mistake with a new address: the caller prints the reading next to
+/// the window, so `thermal=unknown` is visible in the startup log.
+fn thermal_default_context(thermal: Option<&str>) -> i32 {
     match thermal {
-        "Critical" => 4096,
-        "Serious" | "Fair" => 8192,
+        Some("Critical") => 4096,
+        Some("Serious") | Some("Fair") => 8192,
         _ => 16384,
     }
 }
@@ -200,8 +215,21 @@ fn daemon_retry_loop(
 
 fn main() {
     common::ignore_sigpipe();
+    // launchd never rotates the log its plist opened; the daemon does.
+    common::spawn_log_rotator(
+        common::log_names_for("llama"),
+        common::LOG_MAX_BYTES,
+        common::LOG_KEEP,
+        std::time::Duration::from_secs(300),
+    );
     common::forward_terminate_to_child_process();
-    eprintln!("=== LAC serve-llama v2.6 (Rust, port-coexistent, thermal-aware) ===");
+    // A port in the environment that this lane will not use is reported here,
+    // where an operator is reading the startup log, instead of surfacing much
+    // later as a lane nothing can reach.
+    for note in common::port_env_notes() {
+        eprintln!("warning: {}", note);
+    }
+    eprintln!("=== Loop Studio serve-llama v2.6 (Rust, port-coexistent, thermal-aware) ===");
 
     if !which("llama-server") {
         eprintln!("llama-server not found in PATH.");
@@ -222,12 +250,16 @@ fn main() {
     let context: i32 = env::args()
         .nth(2)
         .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| thermal_default_context(&thermal));
+        .unwrap_or_else(|| thermal_default_context(thermal.as_deref()));
     let context = context.clamp(2048, 65536);
 
     let port = server_port();
     eprintln!("llama-server with model: {}", model);
-    eprintln!("Context window: {} tokens (thermal={})", context, thermal);
+    eprintln!(
+        "Context window: {} tokens (thermal={})",
+        context,
+        common::thermal_label(&thermal)
+    );
     // Not "Listening on": nothing is bound yet, and this line used to be
     // printed before the port was even known to be free, so a failed launch
     // ended with a confident claim of a listener that did not exist. The
@@ -239,11 +271,11 @@ fn main() {
         .map(|n| n.get())
         .unwrap_or(4);
     let (def_b, def_u, def_np) = llama_tune(total_gib, cpus);
-    let batch = tune_or_env("LAC_LLAMA_BATCH", def_b);
-    let ubatch = tune_or_env("LAC_LLAMA_UBATCH", def_u);
-    let parallel = tune_or_env("LAC_LLAMA_NP", def_np);
+    let batch = tune_or_env("LOOP_STUDIO_LLAMA_BATCH", def_b);
+    let ubatch = tune_or_env("LOOP_STUDIO_LLAMA_UBATCH", def_u);
+    let parallel = tune_or_env("LOOP_STUDIO_LLAMA_NP", def_np);
     eprintln!(
-        "Batch: {} / micro-batch: {} / parallel: {} (host {:.0} GiB, {} cpus; override via LAC_LLAMA_BATCH/_UBATCH/_NP)",
+        "Batch: {} / micro-batch: {} / parallel: {} (host {:.0} GiB, {} cpus; override via LOOP_STUDIO_LLAMA_BATCH/_UBATCH/_NP)",
         batch, ubatch, parallel, total_gib, cpus
     );
 
@@ -253,7 +285,7 @@ fn main() {
     // unloaded, and the last line in the log was a confident "Listening on
     // 127.0.0.1:8081" for a listener this process never owned.
     //
-    // Interactive: refuse, nonzero, so `lac serve llama` is honest.
+    // Interactive: refuse, nonzero, so `loop-studio serve llama` is honest.
     // Supervised: do not give up. The holder may be a stale process, and the
     // retry loop is how this lane takes over when it goes away. If the holder
     // is healthy and stays, the loop stops itself after GIVE_UP_AFTER with a
@@ -314,17 +346,50 @@ fn main() {
     eprintln!("serve-llama: {failure}");
     std::process::exit(1);
 }
-
 #[cfg(test)]
 mod tests {
+    // A `#[test]` that loses its attribute is valid Rust that never runs:
+    // the suite goes one test quieter and stays green. Fail the build instead.
+    #![deny(dead_code)]
+
     use super::*;
+
+    /// The writer and the reader of this lane's port are the same function.
+    /// They were not: `server_port` was a bare `parse()` and
+    /// `common::llama_port()` was another, so `LOOP_STUDIO_LLAMA_PORT=0` bound the
+    /// engine to a random ephemeral port while the router, the TUI, `lac
+    /// status` and Studio all looked at 0 — a serving lane nothing could find.
+    /// Asserting the delegation, not a copy of the table, is what keeps them
+    /// from splitting again.
+    #[test]
+    fn this_lane_binds_exactly_where_the_readers_look() {
+        for raw in ["8081", " 9001 ", "0", "", "abc", "65536"] {
+            let saved = std::env::var("LOOP_STUDIO_LLAMA_PORT").ok();
+            unsafe { std::env::set_var("LOOP_STUDIO_LLAMA_PORT", raw) };
+            assert_eq!(
+                server_port(),
+                common::llama_port(),
+                "LOOP_STUDIO_LLAMA_PORT={raw:?}: writer and reader disagree"
+            );
+            // And the specific failure that motivated the delegation.
+            if common::port_from(raw).is_none() {
+                assert_ne!(server_port(), 0, "{raw:?} must not reach --port");
+            }
+            unsafe {
+                match saved {
+                    Some(v) => std::env::set_var("LOOP_STUDIO_LLAMA_PORT", v),
+                    None => std::env::remove_var("LOOP_STUDIO_LLAMA_PORT"),
+                }
+            }
+        }
+    }
 
     #[test]
     fn thermal_context_steps_down() {
-        assert_eq!(thermal_default_context("Nominal"), 16384);
-        assert_eq!(thermal_default_context("Fair"), 8192);
-        assert_eq!(thermal_default_context("Serious"), 8192);
-        assert_eq!(thermal_default_context("Critical"), 4096);
+        assert_eq!(thermal_default_context(Some("Nominal")), 16384);
+        assert_eq!(thermal_default_context(Some("Fair")), 8192);
+        assert_eq!(thermal_default_context(Some("Serious")), 8192);
+        assert_eq!(thermal_default_context(Some("Critical")), 4096);
     }
 
     #[test]

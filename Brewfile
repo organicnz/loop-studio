@@ -1,4 +1,4 @@
-# Homebrew bundle for LAC on Apple Silicon Macs
+# Homebrew bundle for Loop Studio on Apple Silicon Macs
 # Run: brew bundle install
 # Every entry verified with `brew info` / `brew info --cask` Sep 2026.
 # mlx-vlm has no formula — install via: uv tool install mlx-vlm / pip install mlx-vlm

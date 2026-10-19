@@ -1,16 +1,16 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "lac/qwen3.8-27b",
+  "model": "loop-studio/qwen3.8-27b",
   "providers": {
-    "lac": {
+    "loop-studio": {
       "package": "@opencode/ai/providers/openai-compatible",
-      "name": "LAC Unified Gateway (:8000)",
+      "name": "Loop Studio Unified Gateway (:8000)",
       "settings": {
         "baseURL": "http://127.0.0.1:8000/v1"
       },
       "models": {
         "qwen3.8-27b": {
-          "name": "Qwen3.8 27B (LAC Auto-Route)",
+          "name": "Qwen3.8 27B (Loop Studio Auto-Route)",
           "modelID": "qwen3.8-27b",
           "limit": {
             "context": 65536,
@@ -113,8 +113,8 @@
       "model": "llama/qwen3.8-27b-q8"
     },
     "route": {
-      "description": "Start LAC unified gateway on :8000",
-      "template": "Start LAC router: `./rust-src/target/release/lac-router`"
+      "description": "Start Loop Studio unified gateway on :8000",
+      "template": "Start Loop Studio router: `./rust-src/target/release/loop-studio-router`"
     }
   },
   "compaction": {

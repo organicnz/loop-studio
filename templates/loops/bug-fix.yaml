@@ -1,4 +1,4 @@
-# LAC Loop Definition: Bug Fix & Root-Cause Remediation
+# Loop Studio Loop Definition: Bug Fix & Root-Cause Remediation
 name: bug-fix
 description: Reproduce -> isolate -> fix -> regression test -> audit
 max_rounds: 2
@@ -10,22 +10,22 @@ phases:
       action: "Check thermals, truncate KV if necessary, save state checkpoint."
 
   - reproduce:
-      model: lac/qwen3.8-27b
+      model: loop-studio/qwen3.8-27b
       agent: coder
       prompt: "Reproduce bug described in: {{task}}. Create or identify failing unit test reproducing the defect."
 
   - implement:
-      model: lac/qwen3.8-27b
+      model: loop-studio/qwen3.8-27b
       agent: coder
       prompt: "Fix root cause of: {{task}}. Verify failing test now passes without breaking existing tests. Do not commit."
 
   - review:
-      model: lac/qwen3.8-27b
+      model: loop-studio/qwen3.8-27b
       agent: reviewer
       prompt: "@reviewer Review git diff for fix. Ensure edge cases, off-by-one errors, and performance implications are thoroughly evaluated."
 
   - apply:
-      model: lac/qwen3.8-27b
+      model: loop-studio/qwen3.8-27b
       agent: coder
       prompt: "Apply critical and major reviewer recommendations. Confirm 100% test pass rate."
 

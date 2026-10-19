@@ -24,7 +24,7 @@ The skill will:
 
 1. **Detect project language** from file extensions in cwd (Swift and Rust)
 2. **Run language-appropriate checks**:
-   - Swift (LAC Studio): `swift build`, `swift test`
+   - Swift (Loop Studio): `swift build`, `swift test`
    - Rust (Backend Suite): `cargo test --manifest-path rust-src/Cargo.toml`, `cargo clippy`
    - General: `git diff --stat` vs last commit, `tokei` LoC counts
 3. **Scan for antipatterns** using regex + language-specific rules
@@ -36,7 +36,7 @@ The skill will:
 # Code Audit — <timestamp>
 
 ## Overview
-- Language(s): Swift (Client: LAC Studio), Rust (Backend Suite: std-only)
+- Language(s): Swift (Client: Loop Studio), Rust (Backend Suite: std-only)
 - Total files: 128
 - Lines of code: 42,310 (via tokei)
 - Last commit: abc123 "feat: login flow"
@@ -45,7 +45,7 @@ The skill will:
 | # | File | Pattern | Severity |
 |---|------|---------|----------|
 | 1 | Sources/App.swift | `forceUnwrap!` on line 44 | high |
-| 2 | rust-src/src/lac.rs | unhandled `unwrap()` on line 120 | medium |
+| 2 | rust-src/src/loop_studio.rs | unhandled `unwrap()` on line 120 | medium |
 
 ## Missing Tests
 | Directory | Files | % with tests |

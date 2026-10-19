@@ -5,9 +5,9 @@ description: Simple job queue processor for autonomous task batches
 
 ## What it does
 
-Processes queued coding tasks one by one without manual intervention per task. Reads `~/todo/lac-tasks.yaml`, pops first `pending` entry, runs it via `loop-orchestrator`, marks `complete` or `failed`, moves to next. Enables "process these 5 tickets overnight and stop" autonomy.
+Processes queued coding tasks one by one without manual intervention per task. Reads `~/todo/loop-studio-tasks.yaml`, pops first `pending` entry, runs it via `loop-orchestrator`, marks `complete` or `failed`, moves to next. Enables "process these 5 tickets overnight and stop" autonomy.
 
-> NOTE: `lac worker` / `lac hermes run` is the native queue drain (judgment-augmented, see `hermes-orchestrator`). This skill is the OpenCode-side batch equivalent for model-driven drains. Human merge review stays mandatory in both paths (native commits to `task/<id>` branches; this skill drains to "ready for human review").
+> NOTE: `loop-studio worker` / `loop-studio hermes run` is the native queue drain (judgment-augmented, see `hermes-orchestrator`). This skill is the OpenCode-side batch equivalent for model-driven drains. Human merge review stays mandatory in both paths (native commits to `task/<id>` branches; this skill drains to "ready for human review").
 
 Lower priority than loop safety, but essential for true non-stop operation where human queues work and machine drains queue.
 
@@ -16,7 +16,7 @@ Lower priority than loop safety, but essential for true non-stop operation where
 ### 1. Queue tasks (human does this)
 
 ```yaml
-# ~/todo/lac-tasks.yaml
+# ~/todo/loop-studio-tasks.yaml
 - id: "1"
   task: "refactor auth login function for timing attack"
   priority: high
@@ -74,7 +74,7 @@ opencode2 run 'Use the task-runner skill --status'
 ```json
 "skills": {
   "task-runner": {
-    "queue_path": "~/todo/lac-tasks.yaml",
+    "queue_path": "~/todo/loop-studio-tasks.yaml",
     "default_max": 3,
     "continue_on_failure": true,
     "truncate_between_tasks": true
@@ -95,4 +95,4 @@ Calls per task:
 2. `kv-cache-manage --truncate` (clean context between tasks)
 3. `loop-orchestrator --run` (execute with review safety)
 4. `agent-resume --save` (post-task checkpoint)
-5. Update `lac-tasks.yaml` status
+5. Update `loop-studio-tasks.yaml` status

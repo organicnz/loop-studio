@@ -18,10 +18,10 @@ Round 3+: human steps in; requirement is ambiguous
 
 ## Workflow
 
-### 1. Define loop (YAML in ~/todo/lac-loops/)
+### 1. Define loop (YAML in ~/todo/loop-studio-loops/)
 
 ```yaml
-# ~/todo/lac-loops/feature-auth-fix.yaml
+# ~/todo/loop-studio-loops/feature-auth-fix.yaml
 name: feature-auth-fix
 task: "Fix 3 security flaws in login function"
 max_rounds: 2
@@ -45,7 +45,7 @@ phases:
 ### 2. Run loop
 
 ```bash
-opencode2 run 'Use the loop-orchestrator skill --run ~/todo/lac-loops/feature-auth-fix.yaml'
+opencode2 run 'Use the loop-orchestrator skill --run ~/todo/loop-studio-loops/feature-auth-fix.yaml'
 ```
 
 Execution:
@@ -65,7 +65,7 @@ Execution:
 - **Thermal gate**: If `thermal-monitor` reports Serious/Critical, pause loop, save state, wait.
 - **Context gate**: If `context-cap` reports >90% of max, truncate before next phase.
 
-## Pre-built loops (`~/todo/lac-loops/`)
+## Pre-built loops (`~/todo/loop-studio-loops/`)
 
 | Loop file | Purpose |
 |---|---|
@@ -78,7 +78,7 @@ Execution:
 ```json
 "skills": {
   "loop-orchestrator": {
-    "loops_dir": "~/todo/lac-loops",
+    "loops_dir": "~/todo/loop-studio-loops",
     "max_rounds": 2,
     "require_human_gate": true,
     "auto_save_state": true

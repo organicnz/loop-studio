@@ -1,4 +1,4 @@
-# Terminals — WARP vs Ghostty vs Others for LAC on M5 Ultra
+# Terminals — WARP vs Ghostty vs Others for Loop Studio on M5 Ultra
 
 Your current base: **WARP** (Rust-based, AGPL-3.0 since April 2026).
 
@@ -22,7 +22,7 @@ Sources: `warp.dev/blog/reimagining-coding-agentic-development-environment`, `wa
 
 ---
 
-## 2. Ghostty 1.3.1 — recommended for local LAC
+## 2. Ghostty 1.3.1 — recommended for local Loop Studio
 
 | Aspect | Fact |
 |---|---|
@@ -72,7 +72,7 @@ brew install --cask ghostty
 # Make it default (optional)
 open -a Ghostty
 
-# The LAC repo ships opencode.jsonc + skills + Brewfile — just run:
+# The Loop Studio repo ships opencode.jsonc + skills + Brewfile — just run:
 ./rust-src/target/release/bootstrap  # ensures HF_HOME, ollama symlink, zprofile hooks
 
 # Then in Ghostty:
@@ -97,7 +97,7 @@ No config conflict — each terminal has its own isolation. WARP for cloud/orche
 
 ---
 
-## 5. Terminal cheat-sheet for LAC
+## 5. Terminal cheat-sheet for Loop Studio
 
 | Action | WARP | Ghostty |
 |---|---|---|

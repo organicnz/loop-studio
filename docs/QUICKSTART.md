@@ -1,4 +1,4 @@
-# LAC — Quick Start (Rust-First, Qwen3.8-27B Primary)
+# Loop Studio — Quick Start (Rust-First, Qwen3.8-27B Primary)
 
 **All primary tools are the Rust binaries built in `rust-src/target/release/`.**
 Standalone Rust launchers under `scripts/*.rs` (build with `make scripts`,
@@ -14,23 +14,23 @@ It is the better model per your preference, replacing the older `qwen3-coder`.
 
 ```bash
 # Clone & enter
-git clone <repo-url> ~/dev/work/AI/LAC
-cd ~/dev/work/AI/LAC
+git clone <repo-url> ~/dev/work/AI/Loop Studio
+cd ~/dev/work/AI/Loop Studio
 
 # Option A — Unified CLI (fastest & recommended)
-./rust-src/target/release/lac doctor     # Verify stack integrity
-./rust-src/target/release/lac status     # Real-time telemetry
+./rust-src/target/release/loop-studio doctor     # Verify stack integrity
+./rust-src/target/release/loop-studio status     # Real-time telemetry
 
-# Option B — LAC Studio (Native Apple Silicon macOS Liquid Glass Desktop App)
-./SwiftUI/package-app.sh --open          # Or run: lac visualize
+# Option B — Loop Studio (Native Apple Silicon macOS Liquid Glass Desktop App)
+./SwiftUI/package-app.sh --open          # Or run: loop-studio visualize
 # Features Claude/Codex ergonomics, Code Assistant split canvas (⌘2), live Hugging Face Model Hub, and Ops telemetry
 
 # Option C — Code Assistant from CLI (Instant single-shot or piped refactoring)
-lac code -f src/main.rs "Review for thread-safety and zero-allocation performance"
-cat src/lib.rs | lac code "Generate comprehensive unit tests"
+loop-studio code -f src/main.rs "Review for thread-safety and zero-allocation performance"
+cat src/lib.rs | loop-studio code "Generate comprehensive unit tests"
 
 # Option C — TUI (interactive terminal dashboard)
-./rust-src/target/release/lac-tui
+./rust-src/target/release/loop-studio-tui
 # Menu: 1) health check  2) serve menu  3) smart serve  4) skills  5) pull models  6) preflight  7) bootstrap
 
 # Option D — headless bootstrap (one-time, 100% pure Rust)
@@ -41,7 +41,7 @@ cat src/lib.rs | lac code "Generate comprehensive unit tests"
 #   • Installs uv, python 3.14, node 24 via mise
 #   • Creates /Volumes/AIModels layout (APFS encrypted, GUID)
 #   • Symlinks ~/.ollama/models -> /Volumes/AIModels/ollama
-#   • Auto-installs Kanban loop templates into ~/todo/lac-loops/
+#   • Auto-installs Kanban loop templates into ~/todo/loop-studio-loops/
 #   • Appends zprofile hooks (HF_HOME, ollama, TM exclusions)
 ```
 
@@ -84,17 +84,17 @@ Server runs on `http://127.0.0.1:8080/v1`. Press Ctrl+C to stop.
 ```bash
 # Rust binary — preferred method, Q8_0 for quality
 ./rust-src/target/release/serve-llama unsloth/Qwen3.6-27B-MTP-GGUF:Q8_0 16384
-# Or via lac CLI:
-./rust-src/target/release/lac serve llama
+# Or via loop-studio CLI:
+./rust-src/target/release/loop-studio serve llama
 ```
 
 Server runs on `http://127.0.0.1:8081/v1`. Press Ctrl+C to stop.
 
-### Unified Gateway (lac-router on :8000)
+### Unified Gateway (loop-studio-router on :8000)
 
 ```bash
 # Start the unified intelligent router (routes to MLX :8080 or llama :8081 automatically)
-./rust-src/target/release/lac route --daemon
+./rust-src/target/release/loop-studio route --daemon
 ```
 
 Endpoint runs on `http://127.0.0.1:8000/v1`.
@@ -110,7 +110,7 @@ Endpoint runs on `http://127.0.0.1:8000/v1`.
 opencode2 run "List the files in the project and summarize the codebase structure"
 ```
 
-> The `opencode.jsonc` config in the project root points at `lac/qwen3.8-27b` 
+> The `opencode.jsonc` config in the project root points at `loop-studio/qwen3.8-27b` 
 > via the unified gateway at `http://127.0.0.1:8000/v1`.
 
 ## 5. Useful skills (ask by ID in a session, or via the TUI command catalog)
@@ -124,7 +124,7 @@ opencode2 run "List the files in the project and summarize the codebase structur
 | Agent Resume | `agent-resume` | Persist state to agent-state.json; resume after crash |
 | Thermal Monitor | `thermal-monitor` | Watch Mac temps; auto-throttle Q8→Q4 on Serious |
 | Loop Orchestrator | `loop-orchestrator` | implement→review→apply, max 2 rounds, human gate |
-| Task Runner | `task-runner` | Drain ~/todo/lac-tasks.yaml queue, max N tasks |
+| Task Runner | `task-runner` | Drain ~/todo/loop-studio-tasks.yaml queue, max N tasks |
 | Permissions Trust | `permissions-trust` | Trusted allow/deny rules so batches don't stall on prompts |
 | Knowledge Recall | `knowledge-recall` | Recall indexed code + lessons before task; record after |
 | Index Embeddings | `index-embeddings` | Build local vector index of codebase for semantic search |
@@ -150,17 +150,17 @@ opencode2 run 'Use the worktree-fanout skill --feature auth'
 opencode2 run 'Use the auditor skill'
 ```
 
-## 5b. LAC Studio Native macOS Desktop App
+## 5b. Loop Studio Native macOS Desktop App
 
 Launch the native Apple Silicon desktop client with Apple Liquid Glass aesthetics, Claude Desktop & Codex ergonomics, split Code Assistant (`⌘2`), and Hugging Face Model Hub discovery:
 
 ```bash
-# Launch LAC Studio (builds and packages on first run)
-lac studio
+# Launch Loop Studio (builds and packages on first run)
+loop-studio studio
 # or
 make studio
 
-# Package as signed macOS application (.build/LAC Studio.app)
+# Package as signed macOS application (.build/Loop Studio.app)
 cd SwiftUI && ./package-app.sh --open
 ```
 
@@ -174,7 +174,7 @@ cd SwiftUI && ./package-app.sh --open
 
 ```bash
 # Morning: TUI health check + start server
-./rust-src/target/release/lac-tui   # 1) health check, then 2) serve Q4
+./rust-src/target/release/loop-studio-tui   # 1) health check, then 2) serve Q4
 # Or headless:
 ./rust-src/target/release/serve-mlx ollama/qwen3.8-27b &
 
@@ -205,7 +205,7 @@ opencode2 run 'Use the context-cap skill --set --max 16000'
 opencode2 run 'Use the agent-resume skill --save --task "<task description>"'
 
 # Run structured loop (max 2 rounds, human gate, never auto-commits)
-opencode2 run 'Use the loop-orchestrator skill --run ~/todo/lac-loops/<task>.yaml'
+opencode2 run 'Use the loop-orchestrator skill --run ~/todo/loop-studio-loops/<task>.yaml'
 
 # Or drain a refined task queue (max N, failure-isolated)
 opencode2 run 'Use the task-runner skill --drain --max 3'
@@ -253,11 +253,11 @@ Your current base terminal is **WARP** (Rust-based, AGPL-3.0 since April 2026).
 ## 9. Project structure (key files — Rust-first, qwen3.8-27B primary)
 
 ```
-LAC/
+loop-studio/
 ├─ Rust binaries (primary):
-│  ├─ rust-src/target/release/lac             # Unified Swiss-army-knife CLI
-│  ├─ rust-src/target/release/lac-router      # Intelligent reverse proxy on :8000
-│  ├─ rust-src/target/release/lac-tui         # Full-featured TUI dashboard
+│  ├─ rust-src/target/release/loop-studio   # Unified Swiss-army-knife CLI
+│  ├─ rust-src/target/release/loop-studio-router      # Intelligent reverse proxy on :8000
+│  ├─ rust-src/target/release/loop-studio-tui         # Full-featured TUI dashboard
 │  ├─ rust-src/target/release/bootstrap       # Idempotent machine setup
 │  ├─ rust-src/target/release/serve-mlx       # mlx-lm server :8080 (native MTP)
 │  ├─ rust-src/target/release/serve-llama     # llama-server :8081 (Q8_0 quality)
@@ -269,7 +269,7 @@ LAC/
 │  └─ .env.example                            # env vars & port definitions
 │
 ├─ Templates (Production Kanban & Loops):
-│  ├─ templates/tasks/lac-tasks.yaml          # Task queue template
+│  ├─ templates/tasks/loop-studio-tasks.yaml          # Task queue template
 │  ├─ templates/loops/daily-coding.yaml       # Fast implement-review-apply-gate
 │  ├─ templates/loops/bug-fix.yaml            # Reproduce-isolate-fix-verify
 │  ├─ templates/loops/feature-branch.yaml     # Worktree multi-file feature loop
@@ -292,8 +292,8 @@ LAC/
 │  └─ .opencode/skills/auditor/               # code audit
 │
 ├─ launchd (non-stop server survival):
-│  ├─ launchd/org.lac.router.plist            # KeepAlive gateway :8000
-│  └─ launchd/org.lac.serve-mlx.plist         # KeepAlive serve-mlx
+│  ├─ launchd/org.loopstudio.router.plist            # KeepAlive gateway :8000
+│  └─ launchd/org.loopstudio.serve-mlx.plist         # KeepAlive serve-mlx
 │
 ├─ Documentation:
 │  ├─ README.md                               # High-level overview

@@ -11,7 +11,7 @@ pub struct PortLock {
 
 impl PortLock {
     pub fn acquire() -> Self {
-        let path = std::env::temp_dir().join("lac-router-test-port.lock");
+        let path = std::env::temp_dir().join("loop-studio-router-test-port.lock");
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -63,7 +63,14 @@ pub fn spawn_router(binary: &str, envs: &[(&str, &str)]) -> RouterProcess {
     for (key, value) in envs {
         command.env(key, value);
     }
-    command.env("LAC_ROUTER_PORT", "0");
+    // "ephemeral", never "0". The router refuses a zero port — every reader in
+    // this project resolves `LOOP_STUDIO_ROUTER_PORT` through the one rule that drops
+    // it, so a router bound to a random port was unreachable to all of them.
+    // This harness used to request one by setting the variable to `0`, which
+    // meant it pinned the bug: it read the real port back off the startup log
+    // (below) and carried on either way. The word makes the intent explicit
+    // and leaves nothing here depending on the defect.
+    command.env("LOOP_STUDIO_ROUTER_PORT", "ephemeral");
     let mut child = command.spawn().expect("router binary runs");
     let stderr = child.stderr.take().expect("router stderr pipe");
     let (sender, receiver) = mpsc::channel();

@@ -1,13 +1,13 @@
 //! Downstream framing regression tests (proven by live probe 2026-09-17).
 //!
-//! Spins up the real `lac-router` binary against a scripted fake backend
+//! Spins up the real `loop-studio-router` binary against a scripted fake backend
 //! and asserts, at the byte level:
 //!   1. chunked SSE passes through byte-identical AND incrementally
 //!      (no buffering, terminator intact);
 //!   2. a complete Content-Length response ends the relay promptly even
 //!      when the backend holds the socket open (no read-until-EOF stall);
 //!   3. idle `: keep-alive` comments enter SSE bodies but NEVER JSON
-//!      bodies (LAC_ROUTER_KEEPALIVE_SECS=1 keeps this test fast).
+//!      bodies (LOOP_STUDIO_ROUTER_KEEPALIVE_SECS=1 keeps this test fast).
 //! One sequential #[test]: child environments are explicit; scenarios run in order.
 
 mod support;
@@ -650,7 +650,7 @@ fn probe_declared_over_budget(router_port: u16, budget: usize) -> Vec<u8> {
     read_response(&mut stream)
 }
 
-/// Pull one numeric field out of a backend's stats object in /lac/status.
+/// Pull one numeric field out of a backend's stats object in /loop-studio/status.
 /// The format is fixed: `"<name>":{"port":P,"ewma_ms":X,"ok":O,"err":E,...}`.
 fn stat_field(status: &str, backend: &str, field: &str) -> Option<u64> {
     let start = status.find(&format!("\"{backend}\":{{\"port\":"))?;
@@ -752,7 +752,7 @@ fn wait_router(port: u16) {
     while start.elapsed() < Duration::from_secs(15) {
         if let Ok(mut s) = TcpStream::connect_timeout(&format!("127.0.0.1:{}", port).parse().unwrap(), Duration::from_millis(300)) {
             s.set_read_timeout(Some(Duration::from_millis(800))).ok();
-            let _ = s.write_all(b"GET /lac/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+            let _ = s.write_all(b"GET /loop-studio/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
             let mut buf = Vec::new();
             let _ = s.read_to_end(&mut buf);
             if String::from_utf8_lossy(&buf).contains("200 OK") {
@@ -764,10 +764,73 @@ fn wait_router(port: u16) {
     panic!("router on :{} never became ready", port);
 }
 
+/// A refusal must survive the client's pending write.
+///
+/// The router answers a rejected request *before* reading the body, and on BSD
+/// — macOS is BSD — closing a socket that still has unread receive data sends
+/// RST, which discards the response the router just wrote. So a client uploading
+/// anything larger than the socket buffers saw `Broken pipe` / `ECONNRESET` and
+/// never read the status that would have told it what to fix: the 401 that says
+/// "set a token", the 413 that says "your body is too big", the 503 that says
+/// "start a backend". Measured before the drain existed: a 3 MiB POST with no
+/// backend produced 307 bytes of a response that declared 199.
+///
+/// This writes `body_len` bytes and then reads, which is the shape that loses:
+/// the client is blocked mid-write when the router decides to answer, so
+/// whatever it reads depends entirely on the router draining first.
+fn probe_large_body_rejection(router_port: u16, body_len: usize) -> (Option<u16>, String, usize) {
+    let head = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n"
+    );
+    let mut stream = TcpStream::connect_timeout(
+        &format!("127.0.0.1:{router_port}").parse().unwrap(),
+        Duration::from_secs(5),
+    )
+    .expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .expect("read timeout");
+    stream.write_all(head.as_bytes()).expect("head");
+
+    // A thread writes the body, so the main thread can read while the write is
+    // still outstanding — otherwise the write would block on a full send buffer
+    // and the two halves could not overlap, which is the entire situation.
+    let mut stream_for_write = stream.try_clone().expect("clone");
+    let writer = std::thread::spawn(move || {
+        let block = vec![b'x'; 64 * 1024];
+        let mut sent = 0;
+        while sent < body_len {
+            let take = block.len().min(body_len - sent);
+            if stream_for_write.write_all(&block[..take]).is_err() {
+                return Err("client write failed");
+            }
+            sent += take;
+        }
+        Ok(())
+    });
+
+    let response = read_response(&mut stream);
+    let write_result = writer.join();
+    let text = String::from_utf8_lossy(&response).to_string();
+    let status = text
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|c| c.parse::<u16>().ok());
+    // A failed write is only acceptable *if* the response still arrived whole:
+    // that is the RST case, where the client learns nothing.
+    let note = match write_result {
+        Ok(Ok(())) => String::new(),
+        Ok(Err(why)) => format!(" [{why}]"),
+        Err(_) => " [writer panicked]".to_string(),
+    };
+    (status, format!("{text}{note}"), response.len())
+}
+
 #[test]
 fn relay_framing_regressions() {
     let _port_lock = support::PortLock::acquire();
-    let tmp_home = std::env::temp_dir().join(format!("lac-test-relay-{}", std::process::id()));
+    let tmp_home = std::env::temp_dir().join(format!("loop-studio-test-relay-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp_home);
     let _ = std::fs::create_dir_all(&tmp_home);
     let llama_port = spawn_backend();
@@ -784,7 +847,7 @@ fn relay_framing_regressions() {
         let reservation = TcpListener::bind(("127.0.0.1", 0)).expect("dead backend reservation");
         reservation.local_addr().expect("dead backend address").port()
     };
-    let router_bin = env!("CARGO_BIN_EXE_lac-router");
+    let router_bin = env!("CARGO_BIN_EXE_loop-studio-router");
     let home_env = tmp_home.to_string_lossy().into_owned();
     let llama_env = llama_port.to_string();
     let healthy_env = healthy_port.to_string();
@@ -793,12 +856,12 @@ fn relay_framing_regressions() {
         router_bin,
         &[
             ("HOME", &home_env),
-            ("LAC_BIND_ADDR", "127.0.0.1"),
+            ("LOOP_STUDIO_BIND_ADDR", "127.0.0.1"),
             ("MLX_PORT", &dead_env),
-            ("LAC_LLAMA_PORT", &llama_env),
-            ("LAC_OLLAMA_PORT", &healthy_env),
-            ("LAC_BACKEND", "auto"),
-            ("LAC_ROUTER_KEEPALIVE_SECS", "1"),
+            ("LOOP_STUDIO_LLAMA_PORT", &llama_env),
+            ("LOOP_STUDIO_OLLAMA_PORT", &healthy_env),
+            ("LOOP_STUDIO_BACKEND", "auto"),
+            ("LOOP_STUDIO_ROUTER_KEEPALIVE_SECS", "1"),
         ],
     );
     let router_port = router.port;
@@ -960,10 +1023,10 @@ fn relay_framing_regressions() {
     let unsupported_request = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nTransfer-Encoding: gzip\r\nConnection: close\r\n\r\nhi";
     assert!(probe_raw(router_port, unsupported_request).starts_with(b"HTTP/1.1 400"));
 
-    let malformed_early = b"GET /lac/status HTTP/1.1\r\nX-Bad: bad\x0bvalue\r\n\r\n";
+    let malformed_early = b"GET /loop-studio/status HTTP/1.1\r\nX-Bad: bad\x0bvalue\r\n\r\n";
     assert!(probe_raw(router_port, malformed_early).starts_with(b"HTTP/1.1 400"));
 
-    let withheld_status = b"GET /lac/status HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\nConnection: close\r\n\r\n";
+    let withheld_status = b"GET /loop-studio/status HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\nConnection: close\r\n\r\n";
     assert!(probe_header_only(router_port, withheld_status).starts_with(b"HTTP/1.1 200"));
     let withheld_options = b"OPTIONS /v1/chat HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\n\r\n";
     assert!(probe_header_only(router_port, withheld_options).starts_with(b"HTTP/1.1 204"));
@@ -1151,7 +1214,7 @@ fn relay_framing_regressions() {
     // Budgets are env-tunable, so a second router with 1s budgets can prove
     // the timeouts actually fire — and that an EOF-delimited stream cut by
     // the budget is NOT charged as a backend fault.
-    let budget_home = std::env::temp_dir().join(format!("lac-test-relay-budget-{}", std::process::id()));
+    let budget_home = std::env::temp_dir().join(format!("loop-studio-test-relay-budget-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&budget_home);
     let _ = std::fs::create_dir_all(&budget_home);
     let budget_home_env = budget_home.to_string_lossy().into_owned();
@@ -1159,16 +1222,16 @@ fn relay_framing_regressions() {
         router_bin,
         &[
             ("HOME", &budget_home_env),
-            ("LAC_BIND_ADDR", "127.0.0.1"),
+            ("LOOP_STUDIO_BIND_ADDR", "127.0.0.1"),
             ("MLX_PORT", &dead_env),
-            ("LAC_LLAMA_PORT", &llama_env),
-            ("LAC_OLLAMA_PORT", &dead_env),
-            ("LAC_BACKEND", "auto"),
-            ("LAC_ROUTER_KEEPALIVE_SECS", "1"),
-            ("LAC_ROUTER_STREAM_BUDGET_SECS", "1"),
-            ("LAC_ROUTER_HEADER_BUDGET_SECS", "1"),
-            ("LAC_ROUTER_BODY_IDLE_SECS", "1"),
-            ("LAC_ROUTER_MAX_BUFFERED_BODY", "98304"),
+            ("LOOP_STUDIO_LLAMA_PORT", &llama_env),
+            ("LOOP_STUDIO_OLLAMA_PORT", &dead_env),
+            ("LOOP_STUDIO_BACKEND", "auto"),
+            ("LOOP_STUDIO_ROUTER_KEEPALIVE_SECS", "1"),
+            ("LOOP_STUDIO_ROUTER_STREAM_BUDGET_SECS", "1"),
+            ("LOOP_STUDIO_ROUTER_HEADER_BUDGET_SECS", "1"),
+            ("LOOP_STUDIO_ROUTER_BODY_IDLE_SECS", "1"),
+            ("LOOP_STUDIO_ROUTER_MAX_BUFFERED_BODY", "98304"),
         ],
     );
     let budget_port = budget_router.port;
@@ -1276,7 +1339,7 @@ fn relay_framing_regressions() {
     // healthy, so every request is served after a failover. MLX stays
     // "up" on the health probe throughout, which is the point: the breaker,
     // not health, is what must take it out of rotation after three faults.
-    let breaker_home = std::env::temp_dir().join(format!("lac-test-relay-breaker-{}", std::process::id()));
+    let breaker_home = std::env::temp_dir().join(format!("loop-studio-test-relay-breaker-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&breaker_home);
     let _ = std::fs::create_dir_all(&breaker_home);
     let breaker_home_env = breaker_home.to_string_lossy().into_owned();
@@ -1284,11 +1347,11 @@ fn relay_framing_regressions() {
         router_bin,
         &[
             ("HOME", &breaker_home_env),
-            ("LAC_BIND_ADDR", "127.0.0.1"),
+            ("LOOP_STUDIO_BIND_ADDR", "127.0.0.1"),
             ("MLX_PORT", &llama_env),
-            ("LAC_LLAMA_PORT", &healthy_env),
-            ("LAC_OLLAMA_PORT", &dead_env),
-            ("LAC_BACKEND", "auto"),
+            ("LOOP_STUDIO_LLAMA_PORT", &healthy_env),
+            ("LOOP_STUDIO_OLLAMA_PORT", &dead_env),
+            ("LOOP_STUDIO_BACKEND", "auto"),
         ],
     );
     let breaker_port = breaker_router.port;
@@ -1298,7 +1361,7 @@ fn relay_framing_regressions() {
     let status_of = |port: u16| {
         String::from_utf8_lossy(&probe_raw(
             port,
-            b"GET /lac/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            b"GET /loop-studio/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
         ))
         .to_string()
     };
@@ -1350,7 +1413,7 @@ fn relay_framing_regressions() {
     // healthy backend instead, and the probe would pass without ever reaching
     // the code it is about.
     let hop_backend_port = spawn_backend();
-    let hop_home = std::env::temp_dir().join(format!("lac-test-relay-hop-{}", std::process::id()));
+    let hop_home = std::env::temp_dir().join(format!("loop-studio-test-relay-hop-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&hop_home);
     let _ = std::fs::create_dir_all(&hop_home);
     let hop_home_env = hop_home.to_string_lossy().into_owned();
@@ -1359,11 +1422,11 @@ fn relay_framing_regressions() {
         router_bin,
         &[
             ("HOME", &hop_home_env),
-            ("LAC_BIND_ADDR", "127.0.0.1"),
+            ("LOOP_STUDIO_BIND_ADDR", "127.0.0.1"),
             ("MLX_PORT", &hop_env),
-            ("LAC_LLAMA_PORT", &dead_env),
-            ("LAC_OLLAMA_PORT", &dead_env),
-            ("LAC_BACKEND", "auto"),
+            ("LOOP_STUDIO_LLAMA_PORT", &dead_env),
+            ("LOOP_STUDIO_OLLAMA_PORT", &dead_env),
+            ("LOOP_STUDIO_BACKEND", "auto"),
         ],
     );
     let hop_router_port = hop_router.port;
@@ -1417,7 +1480,7 @@ fn relay_framing_regressions() {
     // here at the log, not in a unit test, because the arms share nothing but
     // the log line: the bug lived in the arms that did not carry the rule.
     // Its own router, so this usage log holds only this rid.
-    let charge_home = std::env::temp_dir().join(format!("lac-test-relay-charge-{}", std::process::id()));
+    let charge_home = std::env::temp_dir().join(format!("loop-studio-test-relay-charge-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&charge_home);
     let _ = std::fs::create_dir_all(&charge_home);
     let charge_home_env = charge_home.to_string_lossy().into_owned();
@@ -1425,16 +1488,77 @@ fn relay_framing_regressions() {
         router_bin,
         &[
             ("HOME", &charge_home_env),
-            ("LAC_BIND_ADDR", "127.0.0.1"),
+            ("LOOP_STUDIO_BIND_ADDR", "127.0.0.1"),
             ("MLX_PORT", &llama_env),
-            ("LAC_LLAMA_PORT", &healthy_env),
-            ("LAC_OLLAMA_PORT", &dead_env),
-            ("LAC_BACKEND", "auto"),
+            ("LOOP_STUDIO_LLAMA_PORT", &healthy_env),
+            ("LOOP_STUDIO_OLLAMA_PORT", &dead_env),
+            ("LOOP_STUDIO_BACKEND", "auto"),
         ],
     );
     let charge_port = charge_router.port;
     assert_ne!(charge_port, dead_port, "router took the dead-backend port");
     wait_router(charge_port);
+
+    // A refusal the client can actually read.
+    //
+    // Its own router with all three backends pointed at a closed port, so the
+    // 503 is reached without depending on the breaker test's state, and so this
+    // check cannot be moved or broken by a change to the scenario above.
+    let refuse_home = std::env::temp_dir().join(format!("loop-studio-test-relay-refuse-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&refuse_home);
+    let _ = std::fs::create_dir_all(&refuse_home);
+    let refuse_home_env = refuse_home.to_string_lossy().into_owned();
+    let refuse_router = support::spawn_router(
+        router_bin,
+        &[
+            ("HOME", &refuse_home_env),
+            ("LOOP_STUDIO_BIND_ADDR", "127.0.0.1"),
+            ("MLX_PORT", &dead_env),
+            ("LOOP_STUDIO_LLAMA_PORT", &dead_env),
+            ("LOOP_STUDIO_OLLAMA_PORT", &dead_env),
+            ("LOOP_STUDIO_BACKEND", "auto"),
+        ],
+    );
+    let refuse_port = refuse_router.port;
+    assert_ne!(refuse_port, dead_port, "router took the released dead-backend port");
+    wait_router(refuse_port);
+
+    // Three shapes, because each fails a different way: a body small enough to
+    // fit the socket buffers, a body far larger than them (the reset), and a
+    // 413 where the declared length is refused up front so the whole upload is
+    // still outstanding and nothing has been read.
+    for (label, body_len, expect) in [
+        ("no-backend, body in one buffer", 1024usize, 503u16),
+        ("no-backend, body past the buffers", 3 * 1024 * 1024, 503),
+        // Declared over MAX_BODY (16 MiB) but only a little actually sent, so
+        // the router refuses on the declared length and never waits for it.
+        ("declared past the ceiling", 17 * 1024 * 1024, 413),
+    ] {
+        let (status, text, bytes) = probe_large_body_rejection(refuse_port, body_len);
+        assert_eq!(
+            status,
+            Some(expect),
+            "{label}: the client must receive the {expect}, not a reset: {text}"
+        );
+        // Whole, not truncated: the declared length of the error body has to be
+        // satisfied by what actually arrived.
+        let declared: usize = text
+            .find("Content-Length: ")
+            .and_then(|i| text[i + 16..].lines().next().and_then(|l| l.trim().parse().ok()))
+            .unwrap_or(0);
+        let head_len = text.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
+        assert_eq!(
+            bytes,
+            declared + head_len,
+            "{label}: the response must be complete, not cut mid-body: {text}"
+        );
+        assert!(
+            !text.contains("client write failed"),
+            "{label}: the client's write was reset, so the error never reached it: {text}"
+        );
+    }
+    drop(refuse_router);
+    let _ = std::fs::remove_dir_all(&refuse_home);
 
     // A body of an exact, known length, so the sum can be checked against a
     // number rather than against a ratio.
@@ -1480,6 +1604,29 @@ fn relay_framing_regressions() {
         est_sum,
         (charged_len + response_sum) / 4,
         "the window sum is the body once plus every generated byte: {lines:?}"
+    );
+
+    // The number above is only meaningful if `resp_body` is the bytes the
+    // client actually received. It used to be the *body* only: the head was
+    // written to the client and charged nowhere, and because the head is
+    // sanitized on the way out it cannot be reconstructed by a reader either.
+    // So this is asserted against the socket rather than against the log, at
+    // the byte level: the estimate that `kv-manage check` reports and
+    // `context-cap` throttles on was short by the head on every single
+    // exchange, and most short relative to a small body.
+    let answered = &lines[1];
+    assert_eq!(answered.outcome, "proxied");
+    assert_eq!(
+        answered.resp_body,
+        raw_charge.len() as u64,
+        "resp_body must be every byte the client received, head included \
+         (client got {} bytes: {:?})",
+        raw_charge.len(),
+        String::from_utf8_lossy(&raw_charge)
+    );
+    assert!(
+        answered.resp_body > 50,
+        "a response with no head charged at all would land near the body length"
     );
     drop(charge_router);
     let _ = std::fs::remove_dir_all(&charge_home);
