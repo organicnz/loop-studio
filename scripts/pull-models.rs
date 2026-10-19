@@ -6,7 +6,7 @@
 //! Usage:  ./scripts/bin/pull-models
 //!
 //! A dependency-free reference fallback. Day to day, prefer
-//! `lac models pull` (mount-gated library paths, fuller verification).
+//! `loop-studio models pull` (mount-gated library paths, fuller verification).
 //! Unlike the old bash script, this fetcher verifies each pull with
 //! `ollama show` and exits non-zero when anything is missing.
 
@@ -77,5 +77,5 @@ fn main() {
         std::process::exit(1);
     }
     eprintln!("Model pull complete.");
-    eprintln!("Next: 1) lac route --daemon  2) lac serve mlx");
+    eprintln!("Next: 1) loop-studio route --daemon  2) loop-studio serve mlx");
 }

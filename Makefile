@@ -1,7 +1,7 @@
-# LAC — Local Agentic Coding Makefile
+# Loop Studio — Local Agentic Coding Makefile
 # Target: Apple Silicon Macs (best on high-RAM Studio) | Qwen 3.8 27B
 
-.PHONY: all default build release test status doctor route route-daemon serve-mlx serve-llama tui studio dashboard bench tune loop-init loop-list worker worker-drain daemon-install daemon-uninstall daemon-status stop ps logs config scripts bootstrap install clean help
+.PHONY: all default build test lint smoke release-smoke validate delivery-index app-check hooks-install hooks-check status doctor route route-daemon serve-mlx serve-llama tui studio dashboard bench tune loop-init loop-list worker worker-drain daemon-install daemon-uninstall daemon-status stop ps logs config scripts bootstrap install clean help
 
 .DEFAULT_GOAL := default
 
@@ -9,28 +9,77 @@
 default: worker
 
 # Binaries
-LAC_BIN = ./rust-src/target/release/lac
-ROUTER_BIN = ./rust-src/target/release/lac-router
-TUI_BIN = ./rust-src/target/release/lac-tui
+LAC_BIN = ./rust-src/target/release/loop-studio
+ROUTER_BIN = ./rust-src/target/release/loop-studio-router
+TUI_BIN = ./rust-src/target/release/loop-studio-tui
 
 all: build
 
 build:
-	@echo "🔨 Building LAC Rust toolsuite (release)..."
+	@echo "🔨 Building Loop Studio Rust toolsuite (release)..."
 	@cd rust-src && cargo build --release
 	@echo "✅ Build complete."
 
 test:
 	@echo "🧪 Running Rust test suite..."
-	@cd rust-src && cargo test
-	@if command -v swift >/dev/null 2>&1; then \
-		echo "🍎 Running Swift test suite (LAC Studio)..."; \
-		cd SwiftUI && swift test; \
+	@cd rust-src && cargo test --locked -- --skip process_level_gateway_and_cli_smoke
+	@if ! command -v swift >/dev/null 2>&1; then \
+		echo "Swift toolchain is required for the delivery gate." >&2; \
+		exit 1; \
 	fi
+	@echo "🍎 Running Swift test suite (Loop Studio)..."
+	@cd SwiftUI && swift test
+
+smoke:
+	@echo "🧪 Running process-level gateway/CLI E2E smoke..."
+	@cd rust-src && cargo test --locked --test e2e_smoke -- --nocapture
+
+release-smoke:
+	@echo "🧪 Running E2E smoke against release binaries..."
+	@cd rust-src && cargo build --locked --release
+	@cd rust-src && LOOP_STUDIO_E2E_BIN_DIR="$(CURDIR)/rust-src/target/release" cargo test --locked --test e2e_smoke -- --nocapture
+
+lint:
+	@echo "🔎 Running strict Rust and Swift lint checks..."
+	@cargo clippy --manifest-path rust-src/Cargo.toml --all-targets --all-features -- -D warnings -A clippy::collapsible-if -A clippy::collapsible-match -A clippy::doc-lazy-continuation -A clippy::needless-range-loop -A clippy::manual-strip -A clippy::needless-return -A clippy::unnecessary-map-or -A clippy::useless-borrows-in-formatting -A clippy::manual-range-contains
+	@cd SwiftUI && swift build -Xswiftc -warnings-as-errors
+
+delivery-index:
+	@missing=0; \
+	for path in lefthook.yml rust-src/tests/e2e_smoke.rs rust-src/tests/support/mod.rs docs/lock-parity.tsv; do \
+		if ! git ls-files --error-unmatch -- "$$path" >/dev/null 2>&1; then \
+			echo "Delivery gate file is not tracked: $$path" >&2; \
+			missing=1; \
+		fi; \
+	done; \
+	test "$$missing" -eq 0
+
+validate:
+	@$(MAKE) lint
+	@$(MAKE) test
+	@$(MAKE) smoke
+	@$(MAKE) release-smoke
+	@$(MAKE) app-check
+
+app-check:
+	@echo "📦 Building and verifying the packaged Loop Studio app..."
+	@cd SwiftUI && ./package-app.sh
+	@plutil -lint SwiftUI/.build/'Loop Studio.app'/Contents/Info.plist
+	@test "$$(/usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity:NSAllowsLocalNetworking' SwiftUI/.build/'Loop Studio.app'/Contents/Info.plist)" = "true"
+	@! /usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity:NSAllowsArbitraryLoads' SwiftUI/.build/'Loop Studio.app'/Contents/Info.plist >/dev/null 2>&1
+	@codesign --verify --deep --strict SwiftUI/.build/'Loop Studio.app'
 
 app:
-	@echo "🍎 Packaging LAC Studio native macOS app..."
+	@echo "📦 Packaging Loop Studio macOS app..."
 	@cd SwiftUI && ./package-app.sh
+
+hooks-install:
+	@lefthook install
+
+hooks-check:
+	@lefthook validate
+	@lefthook check-install
+
 
 status:
 	@$(LAC_BIN) status
@@ -39,11 +88,11 @@ doctor:
 	@$(LAC_BIN) doctor
 
 route:
-	@echo "🌐 Starting LAC Unified Gateway on :8000..."
+	@echo "🌐 Starting Loop Studio Unified Gateway on :8000..."
 	@$(ROUTER_BIN)
 
 route-daemon:
-	@echo "🌐 Starting LAC Gateway in background (:8000)..."
+	@echo "🌐 Starting Loop Studio Gateway in background (:8000)..."
 	@$(LAC_BIN) route --daemon
 
 serve-mlx:
@@ -58,7 +107,7 @@ tui:
 	@$(TUI_BIN)
 
 studio:
-	@echo "🖥️ Launching LAC Studio macOS app..."
+	@echo "🖥️ Launching Loop Studio macOS app..."
 	@$(LAC_BIN) studio
 
 dashboard: studio
@@ -99,10 +148,10 @@ loop-init:
 loop-list:
 	@$(LAC_BIN) loop list
 
-worker: build
+worker: | build
 	@$(LAC_BIN) worker
 
-worker-drain: build
+worker-drain: | build
 	@$(LAC_BIN) worker --drain
 
 daemon-install: install
@@ -115,29 +164,30 @@ daemon-status:
 	@$(LAC_BIN) daemon status
 
 install: build
-	@echo "📦 Installing full LAC suite to ~/.local/bin..."
+	@echo "📦 Installing full Loop Studio suite to ~/.local/bin..."
 	@mkdir -p $$HOME/.local/bin
-	@install -m 755 $(LAC_BIN) $$HOME/.local/bin/lac
-	@install -m 755 $(ROUTER_BIN) $$HOME/.local/bin/lac-router
-	@install -m 755 $(TUI_BIN) $$HOME/.local/bin/lac-tui
-	@install -m 755 ./rust-src/target/release/bootstrap $$HOME/.local/bin/lac-bootstrap
+	@install -m 755 $(LAC_BIN) $$HOME/.local/bin/loop-studio
+	@install -m 755 $(ROUTER_BIN) $$HOME/.local/bin/loop-studio-router
+	@install -m 755 $(TUI_BIN) $$HOME/.local/bin/loop-studio-tui
+	@install -m 755 ./rust-src/target/release/bootstrap $$HOME/.local/bin/loop-studio-bootstrap
 	@install -m 755 ./rust-src/target/release/bootstrap $$HOME/.local/bin/bootstrap
-	@install -m 755 ./rust-src/target/release/serve-mlx $$HOME/.local/bin/lac-serve-mlx
+	@install -m 755 ./rust-src/target/release/serve-mlx $$HOME/.local/bin/loop-studio-serve-mlx
 	@install -m 755 ./rust-src/target/release/serve-mlx $$HOME/.local/bin/serve-mlx
-	@install -m 755 ./rust-src/target/release/serve-llama $$HOME/.local/bin/lac-serve-llama
+	@install -m 755 ./rust-src/target/release/serve-llama $$HOME/.local/bin/loop-studio-serve-llama
 	@install -m 755 ./rust-src/target/release/serve-llama $$HOME/.local/bin/serve-llama
-	@install -m 755 ./rust-src/target/release/pull-models $$HOME/.local/bin/lac-pull-models
+	@install -m 755 ./rust-src/target/release/pull-models $$HOME/.local/bin/loop-studio-pull-models
 	@install -m 755 ./rust-src/target/release/pull-models $$HOME/.local/bin/pull-models
-	@install -m 755 ./rust-src/target/release/kv-manage $$HOME/.local/bin/lac-kv-manage
+	@install -m 755 ./rust-src/target/release/kv-manage $$HOME/.local/bin/loop-studio-kv-manage
 	@install -m 755 ./rust-src/target/release/kv-manage $$HOME/.local/bin/kv-manage
-	@echo "✅ Installed 100% pure Rust binaries to ~/.local/bin: lac, lac-router, lac-tui, serve-mlx, serve-llama, pull-models, kv-manage, bootstrap"
+	@echo "✅ Installed 100% pure Rust binaries to ~/.local/bin: loop-studio, loop-studio-router, loop-studio-tui, serve-mlx, serve-llama, pull-models, kv-manage, bootstrap"
 
 clean:
 	@cd rust-src && cargo clean
+	@rm -rf SwiftUI/.build SwiftUI/.swiftpm scripts/bin
 	@echo "🧹 Clean complete."
 
 help:
-	@echo "LAC (Local Agentic Coding) Command Runner:"
+	@echo "Loop Studio (Local Agentic Coding) Command Runner:"
 	@echo "  make (or make worker) Run default 24/7 autonomous worker daemon"
 	@echo "  make worker-drain   Run autonomous worker until queue is empty and exit"
 	@echo "  make daemon-install Install and start 24/7 worker & gateway as macOS LaunchAgents"
@@ -149,16 +199,28 @@ help:
 	@echo "  make serve-mlx      Start MLX engine (:8080)"
 	@echo "  make serve-llama    Start llama-server (:8081)"
 	@echo "  make tui            Launch terminal control center"
-	@echo "  make studio         Launch LAC Studio native macOS app (⌘1-⌘5)"
+	@echo "  make studio         Launch Loop Studio native macOS app (⌘1-⌘5)"
 	@echo "  make dashboard      Alias for make studio"
 	@echo "  make bench          Run latency/speed benchmark"
 	@echo "  make tune           Rank all live lanes by throughput"
-	@echo "  make stop           Stop router started by lac (engines left running)"
-	@echo "  make ps             List lac processes + port table"
+	@echo "  make stop           Stop router started by loop-studio (engines left running)"
+	@echo "  make ps             List loop-studio processes + port table"
 	@echo "  make logs           Tail router log"
 	@echo "  make config         Print effective configuration"
 	@echo "  make scripts        Compile standalone Rust launchers (scripts/*.rs)"
 	@echo "  make bootstrap      Build suite + run idempotent machine bootstrap"
 	@echo "  make build          Build release binaries"
 	@echo "  make install        Install binaries to ~/.local/bin"
-	@echo "  make test           Run cargo unit tests"
+	@echo "  make test           Run Rust and Swift test suites"
+	@echo "  make lint           Run strict Rust Clippy and Swift warning checks"
+	@echo "  make smoke          Run process-level gateway/CLI E2E smoke"
+	@echo "  make release-smoke  Run E2E smoke against release binaries"
+	@echo "  make validate       Run the complete fail-closed delivery gate"
+	@echo "  make delivery-index Verify required gate files are tracked"
+	@echo "  make app-check      Package, sign, and verify Loop Studio"
+	@echo "  make clean          Remove Rust + Swift build outputs + scripts/bin"
+	@echo "  make app            Package Loop Studio macOS app"
+	@echo "  make hooks-install  Install the Lefthook pre-commit gate"
+	@echo "  make hooks-check    Validate Lefthook and hook installation"
+	@echo "  make loop-init      Install Kanban queue + loop templates to ~/todo"
+	@echo "  make loop-list      List available loop workflows"

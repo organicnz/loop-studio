@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "lac-bootstrap"
+name = "loop-studio"
 version = "2.0.0"

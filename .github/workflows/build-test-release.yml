@@ -1,18 +1,18 @@
-name: Build, Test & Release LAC Stack
+name: Build, Test & Release Loop Studio Stack
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
-    branches: [master]
+    branches: [main]
   workflow_dispatch:
 
 # Same as foodshare pattern: cancel superseded runs, GitHub-hosted runners.
-# Cancel-in-progress is scoped to non-master so a fast-follow push can never
-# kill an in-flight test→release publish on master mid-release.
+# Cancel-in-progress is scoped to non-main so a fast-follow push can never
+# kill an in-flight test→release publish on main mid-release.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -20,14 +20,29 @@ permissions:
 jobs:
   test:
     name: Test
-    runs-on: macos-14
+    # macos-15 rather than macos-14: the macos-14 image is itself being
+    # deprecated (unsupported from November), and macos-15 ships the Xcode 26
+    # the Swift app's macOS 26 API needs.
+    runs-on: macos-15
     defaults:
       run:
         shell: bash
-        working-directory: rust-src
+        working-directory: .
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # The Swift package declares `swift-tools-version: 6.0` and uses the
+      # macOS 26 `.glassEffect` refraction API, so it needs the macOS 26 SDK
+      # — Xcode 26 or later. The image's default Xcode is 16.4, whose SDK has
+      # no `glassEffect` at all, and the gate failed with "value of type
+      # 'Self' has no member 'glassEffect'". Select the Xcode explicitly
+      # rather than inheriting whatever the image defaults to.
+      - name: Select Xcode (macOS 26 SDK)
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.3.app
+          swift --version
+          xcodebuild -showsdks | grep -i macos
 
       - name: Setup Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -38,22 +53,19 @@ jobs:
           workspaces: rust-src
 
       - name: Build release binaries
-        run: cargo build --locked --release
+        run: cargo build --manifest-path rust-src/Cargo.toml --locked --release
 
-      - name: Run test suite
-        run: cargo test --locked
-
-      - name: Run integration test (router_intel)
-        run: cargo test --locked --test router_intel
+      - name: Run delivery gate
+        run: make delivery-index validate
 
       - name: Upload release binaries
         uses: actions/upload-artifact@v4
         with:
-          name: lac-release-${{ github.sha }}
+          name: loop-studio-release-${{ github.sha }}
           path: |
-            rust-src/target/release/lac
-            rust-src/target/release/lac-router
-            rust-src/target/release/lac-tui
+            rust-src/target/release/loop-studio
+            rust-src/target/release/loop-studio-router
+            rust-src/target/release/loop-studio-tui
             rust-src/target/release/bootstrap
             rust-src/target/release/serve-mlx
             rust-src/target/release/serve-llama
@@ -64,7 +76,7 @@ jobs:
   # Optional: publish to release
   release:
     needs: test
-    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -72,16 +84,16 @@ jobs:
       - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
-          name: lac-release-${{ github.sha }}
+          name: loop-studio-release-${{ github.sha }}
           path: ./artifacts
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.7.${{ github.run_number }}
+          tag_name: v2.8.${{ github.run_number }}
           files: ./artifacts/*
           fail_on_unmatched_files: true
-          name: LAC v2.7 Release
+          name: Loop Studio v2.8 Release
           body: |
             ## What's Changed
 
@@ -91,13 +103,14 @@ jobs:
             - Transcript logging with `run_logged` + `task_log_path`
             - Doctor history JSONL + RAM-trend line
             - KV provenance `risk_level_full` with unit tests
-            - 120 tests passing (all units + 1 integration `router_intelligence`)
+            - Hermetic process-level gateway/CLI E2E smoke
+            - Rust and Swift delivery gates enforced by `make validate`
             - Clean release build, zero errors
 
             ### Binaries
-            - `lac` — CLI orchestrator
-            - `lac-router` — router learning layer
-            - `lac-tui` — TUI interface
+            - `loop-studio` — CLI orchestrator
+            - `loop-studio-router` — router learning layer
+            - `loop-studio-tui` — TUI interface
             - `bootstrap` — mount-gated bootstrap
             - `serve-mlx` — MLX launcher (port-drift, thermal-aware)
             - `serve-llama` — llama-server launcher (thermal context clamp)
@@ -105,7 +118,7 @@ jobs:
             - `kv-manage` — token provenance + risk levels
 
             ### Notes
-            - Built on GitHub-hosted `macos-14` (ARM64), same pattern as foodshare (`ubuntu-24.04` / `macos-14`)
+            - Built on GitHub-hosted `macos-15` (ARM64), same pattern as foodshare (`ubuntu-24.04` / `macos-15`)
             - KV provenance chain: explicit → env → router 1h estimate → legacy probe
             - Circuit breaker: 3-strike/30s EWMA backend failure handler
             - Fastest-mode routing: reorder backends by measured latency

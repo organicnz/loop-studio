@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.loopstudio.router</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/organic/dev/work/AI/loop-studio/rust-src/target/release/loop-studio-router</string>
+        <string>8000</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/organic/dev/work/AI/loop-studio</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>Timeout</key>
+    <integer>30</integer>
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/organic/Library/Logs/loop-studio-router.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/organic/Library/Logs/loop-studio-router.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>LOOP_STUDIO_ROUTER_PORT</key>
+        <string>8000</string>
+        <!-- Keep loopback. For Tailscale remote, front it with
+             `tailscale serve --https 443 http://127.0.0.1:8000` and set
+             LOOP_STUDIO_API_TOKEN via `launchctl setenv LOOP_STUDIO_API_TOKEN "$(openssl rand -hex 32)"`
+             then `loop-studio daemon install` again. Never commit a token here.
+             Binding 0.0.0.0 would listen on every interface, LAN and Wi-Fi
+             included, not only the tailnet. -->
+        <key>LOOP_STUDIO_BIND_ADDR</key>
+        <string>127.0.0.1</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/Users/organic/.cargo/bin:/Users/organic/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>

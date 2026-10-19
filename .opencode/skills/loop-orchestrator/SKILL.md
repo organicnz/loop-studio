@@ -7,6 +7,8 @@ description: Run defined agentic loops (implement-review-apply) with safety gate
 
 Orchestrates multi-step agentic coding loops with safety gates between phases. Prevents infinite implement↔review ping-pong (cap at 2 rounds per research). Each phase calls appropriate skills for state, context, and thermal safety.
 
+> Queue semantics (judge/select, task branches, review markers, dead-letter) are normative in `hermes-orchestrator/SKILL.md` + `docs/ARCHITECTURE.md §5`. This skill defines the single-task implement→review→apply→gate shape only.
+
 Implements the proven pattern from cmaven dual-model review research:
 ```
 Round 1: implement → review → apply  (most real problems surface here)
@@ -16,10 +18,10 @@ Round 3+: human steps in; requirement is ambiguous
 
 ## Workflow
 
-### 1. Define loop (YAML in ~/todo/lac-loops/)
+### 1. Define loop (YAML in ~/todo/loop-studio-loops/)
 
 ```yaml
-# ~/todo/lac-loops/feature-auth-fix.yaml
+# ~/todo/loop-studio-loops/feature-auth-fix.yaml
 name: feature-auth-fix
 task: "Fix 3 security flaws in login function"
 max_rounds: 2
@@ -43,7 +45,7 @@ phases:
 ### 2. Run loop
 
 ```bash
-opencode2 run 'Use the loop-orchestrator skill --run ~/todo/lac-loops/feature-auth-fix.yaml'
+opencode2 run 'Use the loop-orchestrator skill --run ~/todo/loop-studio-loops/feature-auth-fix.yaml'
 ```
 
 Execution:
@@ -63,7 +65,7 @@ Execution:
 - **Thermal gate**: If `thermal-monitor` reports Serious/Critical, pause loop, save state, wait.
 - **Context gate**: If `context-cap` reports >90% of max, truncate before next phase.
 
-## Pre-built loops (`~/todo/lac-loops/`)
+## Pre-built loops (`~/todo/loop-studio-loops/`)
 
 | Loop file | Purpose |
 |---|---|
@@ -76,7 +78,7 @@ Execution:
 ```json
 "skills": {
   "loop-orchestrator": {
-    "loops_dir": "~/todo/lac-loops",
+    "loops_dir": "~/todo/loop-studio-loops",
     "max_rounds": 2,
     "require_human_gate": true,
     "auto_save_state": true

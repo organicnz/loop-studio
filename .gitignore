@@ -1,6 +1,7 @@
 # Rust build artifacts
 /rust-src/target/
 /rust-src/**/target/
+*.profraw
 /scripts/bin/
 *.rs.bk
 
@@ -34,9 +35,19 @@ models/
 # OpenCode & IDE artifacts
 .opencode/logs/
 .opencode/cache/
+*.bak
+*.bak2
+*.orig
+*.swp
+*.swo
+*.ws
+*~
 
 # SwiftPM build output
 .build/
 .swiftpm/
 /SwiftUI/.build/
 /SwiftUI/.swiftpm/
+
+# Git worktrees (full nested checkouts, never committed)
+/.worktrees/

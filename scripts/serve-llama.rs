@@ -6,7 +6,7 @@
 //! Usage:  ./scripts/bin/serve-llama [MODEL] [CONTEXT] [--port PORT]
 //!
 //! A dependency-free reference fallback. Day to day, prefer
-//! `lac serve llama` (thermal-aware context, readiness reporting).
+//! `loop-studio serve llama` (thermal-aware context, readiness reporting).
 //! Unlike the old bash script, this launcher preflights the binary,
 //! the port, and local model files, and clamps the context window.
 

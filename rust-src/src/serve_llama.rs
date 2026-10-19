@@ -2,9 +2,9 @@
 //!
 //! v2.6: thermal probed once (old code spawned pmset 3x and double-
 //! shrank Fair 8192->4096 by accident), port overridable via
-//! LAC_LLAMA_PORT, binary/model preflight with actionable errors,
+//! LOOP_STUDIO_LLAMA_PORT, binary/model preflight with actionable errors,
 //! context clamped to a sane range, and a readiness prober thread so
-//! `lac status` stops racing server boot.
+//! `loop-studio status` stops racing server boot.
 
 mod common;
 
@@ -21,19 +21,34 @@ fn port_in_use(port: u16) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_ok()
 }
 
+/// Where this lane binds.
+///
+/// This was a fourth definition of the same port — a bare `parse()`, zero
+/// included — while `common::llama_port()` (the reader the router, the TUI,
+/// `loop-studio status` and Studio all use) had its own. With `LOOP_STUDIO_LLAMA_PORT=0` this
+/// handed `--port 0` to the engine, so the OS assigned a random port, the
+/// wrapper published nothing, and every reader looked at 0: a lane that was
+/// serving and could not be found. The writer now calls the reader, the same
+/// delegation `serve-mlx` already makes for `MLX_PORT`.
 fn server_port() -> u16 {
-    env::var("LAC_LLAMA_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(8081)
+    common::llama_port()
 }
 
 /// Context default for one thermal reading. Fair/Critical shrink the
 /// window so the server stays under the throttle threshold.
-fn thermal_default_context(thermal: &str) -> i32 {
+///
+/// `None` — the probe could not answer — keeps the unconstrained default. The
+/// probe used to run `pmset -g thermals`, which pmset rejects, so *every*
+/// host arrived here as "Nominal" and a machine actively throttling was given
+/// the largest window; that is the failure this argument can now express
+/// honestly, because a missing reading is no longer a word. An absent reading
+/// is not evidence of heat, and treating it as evidence of headroom would be
+/// the same mistake with a new address: the caller prints the reading next to
+/// the window, so `thermal=unknown` is visible in the startup log.
+fn thermal_default_context(thermal: Option<&str>) -> i32 {
     match thermal {
-        "Critical" => 4096,
-        "Serious" | "Fair" => 8192,
+        Some("Critical") => 4096,
+        Some("Serious") | Some("Fair") => 8192,
         _ => 16384,
     }
 }
@@ -92,6 +107,10 @@ fn backoff_ms(attempt: u32) -> u64 {
     exp.min(BACKOFF_CAP_MS) + jitter_ms(attempt)
 }
 
+/// Launch the engine and wait for it, keeping the pid published so a
+/// termination signal can be forwarded to it. `status()` consumed the
+/// `Child` and returned only an `ExitStatus`, which left the parent with
+/// no handle to signal — the mechanism behind orphaned engines.
 fn spawn_server(
     model: &str,
     port: u16,
@@ -119,8 +138,17 @@ fn spawn_server(
         .arg(parallel.to_string())
         .arg("-n-gpu-layers")
         .arg("999")
-        .status()
+        .spawn()
+        .and_then(|mut child| {
+            common::set_child_pid(child.id() as i32);
+            let status = child.wait();
+            common::clear_child_pid();
+            status
+        })
 }
+
+/// Set by the readiness prober the first time the engine answers HTTP.
+static EVER_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn daemon_retry_loop(
     model: String,
@@ -129,36 +157,79 @@ fn daemon_retry_loop(
     batch: i32,
     ubatch: i32,
     parallel: i32,
-) {
-    let mut attempt: u32 = 0;
+) -> std::io::Error {
+    use std::sync::atomic::Ordering;
+    let mut crashes: u32 = 0;
     loop {
         eprintln!(
             "llama-server launch (attempt {}, model {} on port {})",
-            attempt + 1,
+            crashes + 1,
             model,
             port
         );
-        match spawn_server(&model, port, context, batch, ubatch, parallel) {
-            Ok(s) if s.success() => {
-                eprintln!("llama-server exited cleanly; daemon stopping.");
-                return;
-            }
-            Ok(s) => {
-                eprintln!("llama-server crashed ({}); backing off...", s);
+        let (outcome, clean) = match spawn_server(&model, port, context, batch, ubatch, parallel) {
+            Ok(status) => {
+                let clean = status.success();
+                if clean {
+                    eprintln!("llama-server exited cleanly");
+                } else {
+                    eprintln!("llama-server crashed ({status}); backing off...");
+                }
+                (format!("{status}"), clean)
             }
             Err(e) => {
-                eprintln!("Failed to launch llama-server: {} (retrying)", e);
+                eprintln!("Failed to launch llama-server: {e} (retrying)");
+                (e.to_string(), false)
             }
+        };
+        if clean {
+            // A clean exit is the engine choosing to stop, not this process
+            // succeeding: no lane is serving. Exiting 0 is exactly what
+            // `KeepAlive{SuccessfulExit: false}` reads as "do not restart", so
+            // the night would end silently. Report the failure instead.
+            return std::io::Error::other(format!(
+                "llama-server exited successfully without staying up ({outcome}); \
+                 treating as a failure so the supervisor restarts it"
+            ));
         }
-        let wait = backoff_ms(attempt);
-        attempt = attempt.saturating_add(1);
-        std::thread::sleep(Duration::from_millis(wait));
+        crashes = crashes.saturating_add(1);
+        if common::daemon_decision(EVER_READY.load(Ordering::SeqCst), crashes)
+            == common::DaemonDecision::Stop
+        {
+            return std::io::Error::other(common::daemon_give_up_reason(
+                "llama-server",
+                &model,
+                port,
+                crashes,
+                &outcome,
+            ));
+        }
+        let wait = backoff_ms(crashes - 1);
+        if !common::sleep_unless_terminating(Duration::from_millis(wait)) {
+            // A signal arrived during backoff. Do not relaunch: the
+            // operator asked for this lane to be down.
+            return std::io::Error::other("terminated while backing off");
+        }
     }
 }
 
 fn main() {
     common::ignore_sigpipe();
-    eprintln!("=== LAC serve-llama v2.6 (Rust, port-coexistent, thermal-aware) ===");
+    // launchd never rotates the log its plist opened; the daemon does.
+    common::spawn_log_rotator(
+        common::log_names_for("llama"),
+        common::LOG_MAX_BYTES,
+        common::LOG_KEEP,
+        std::time::Duration::from_secs(300),
+    );
+    common::forward_terminate_to_child_process();
+    // A port in the environment that this lane will not use is reported here,
+    // where an operator is reading the startup log, instead of surfacing much
+    // later as a lane nothing can reach.
+    for note in common::port_env_notes() {
+        eprintln!("warning: {}", note);
+    }
+    eprintln!("=== Loop Studio serve-llama v2.6 (Rust, port-coexistent, thermal-aware) ===");
 
     if !which("llama-server") {
         eprintln!("llama-server not found in PATH.");
@@ -179,30 +250,58 @@ fn main() {
     let context: i32 = env::args()
         .nth(2)
         .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| thermal_default_context(&thermal));
+        .unwrap_or_else(|| thermal_default_context(thermal.as_deref()));
     let context = context.clamp(2048, 65536);
 
     let port = server_port();
     eprintln!("llama-server with model: {}", model);
-    eprintln!("Context window: {} tokens (thermal={})", context, thermal);
-    eprintln!("Listening on 127.0.0.1:{}", port);
+    eprintln!(
+        "Context window: {} tokens (thermal={})",
+        context,
+        common::thermal_label(&thermal)
+    );
+    // Not "Listening on": nothing is bound yet, and this line used to be
+    // printed before the port was even known to be free, so a failed launch
+    // ended with a confident claim of a listener that did not exist. The
+    // prober below reports READY when it is true.
+    eprintln!("starting on 127.0.0.1:{} (readiness confirmed below)", port);
 
     let total_gib = common::total_ram_gib().unwrap_or(16.0);
     let cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
     let (def_b, def_u, def_np) = llama_tune(total_gib, cpus);
-    let batch = tune_or_env("LAC_LLAMA_BATCH", def_b);
-    let ubatch = tune_or_env("LAC_LLAMA_UBATCH", def_u);
-    let parallel = tune_or_env("LAC_LLAMA_NP", def_np);
+    let batch = tune_or_env("LOOP_STUDIO_LLAMA_BATCH", def_b);
+    let ubatch = tune_or_env("LOOP_STUDIO_LLAMA_UBATCH", def_u);
+    let parallel = tune_or_env("LOOP_STUDIO_LLAMA_NP", def_np);
     eprintln!(
-        "Batch: {} / micro-batch: {} / parallel: {} (host {:.0} GiB, {} cpus; override via LAC_LLAMA_BATCH/_UBATCH/_NP)",
+        "Batch: {} / micro-batch: {} / parallel: {} (host {:.0} GiB, {} cpus; override via LOOP_STUDIO_LLAMA_BATCH/_UBATCH/_NP)",
         batch, ubatch, parallel, total_gib, cpus
     );
 
+    // A port already in use is not this process's success. It used to exit 0
+    // here, which is the one outcome `KeepAlive{SuccessfulExit: false}` treats
+    // as "do not restart" — so under launchd the job went unloaded and stayed
+    // unloaded, and the last line in the log was a confident "Listening on
+    // 127.0.0.1:8081" for a listener this process never owned.
+    //
+    // Interactive: refuse, nonzero, so `loop-studio serve llama` is honest.
+    // Supervised: do not give up. The holder may be a stale process, and the
+    // retry loop is how this lane takes over when it goes away. If the holder
+    // is healthy and stays, the loop stops itself after GIVE_UP_AFTER with a
+    // message that says exactly that.
     if port_in_use(port) {
-        eprintln!("port {} already bound — another llama-server is up; exiting; route to it via /v1/models.", port);
-        std::process::exit(0);
+        if !should_daemon() {
+            eprintln!(
+                "port {port} is already bound by another process; not starting a second \
+                 llama-server. Route to the existing one, or free the port."
+            );
+            std::process::exit(1);
+        }
+        eprintln!(
+            "port {port} is already bound; supervising anyway and will take it over if that \
+             process exits"
+        );
     }
 
     // Readiness prober: the router's health gate needs /v1/models == 200,
@@ -210,9 +309,13 @@ fn main() {
     std::thread::spawn(move || {
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if common::wait_for_http(port, Duration::from_secs(300)) {
+                EVER_READY.store(true, std::sync::atomic::Ordering::SeqCst);
                 eprintln!("serve-llama READY on :{} (model loaded)", port);
             } else {
-                eprintln!("serve-llama: model not ready after 300s — check logs");
+                eprintln!(
+                    "serve-llama: no HTTP on :{port} after 300s — the model is still loading, or \
+                     the engine failed. The supervisor will retry if it exits."
+                );
             }
         }));
         if let Err(e) = res {
@@ -220,26 +323,73 @@ fn main() {
         }
     });
 
-    if should_daemon() {
-        daemon_retry_loop(model, port, context, batch, ubatch, parallel);
+    // Both paths used to fall through to a return, so the process exited 0
+    // after a crash, a bind failure, or a missing binary.
+    let failure = if should_daemon() {
+        daemon_retry_loop(model, port, context, batch, ubatch, parallel)
     } else {
         match spawn_server(&model, port, context, batch, ubatch, parallel) {
-            Ok(s) => eprintln!("server exited: {}", s),
-            Err(e) => eprintln!("Failed to start llama-server: {}", e),
+            Ok(status) if status.success() => {
+                eprintln!("server exited: {status}");
+                std::io::Error::other("llama-server exited without staying up")
+            }
+            Ok(status) => {
+                eprintln!("server exited: {status}");
+                std::io::Error::other(format!("llama-server exited with {status}"))
+            }
+            Err(e) => {
+                eprintln!("Failed to start llama-server: {e}");
+                e
+            }
         }
-    }
+    };
+    eprintln!("serve-llama: {failure}");
+    std::process::exit(1);
 }
-
 #[cfg(test)]
 mod tests {
+    // A `#[test]` that loses its attribute is valid Rust that never runs:
+    // the suite goes one test quieter and stays green. Fail the build instead.
+    #![deny(dead_code)]
+
     use super::*;
+
+    /// The writer and the reader of this lane's port are the same function.
+    /// They were not: `server_port` was a bare `parse()` and
+    /// `common::llama_port()` was another, so `LOOP_STUDIO_LLAMA_PORT=0` bound the
+    /// engine to a random ephemeral port while the router, the TUI, `lac
+    /// status` and Studio all looked at 0 — a serving lane nothing could find.
+    /// Asserting the delegation, not a copy of the table, is what keeps them
+    /// from splitting again.
+    #[test]
+    fn this_lane_binds_exactly_where_the_readers_look() {
+        for raw in ["8081", " 9001 ", "0", "", "abc", "65536"] {
+            let saved = std::env::var("LOOP_STUDIO_LLAMA_PORT").ok();
+            unsafe { std::env::set_var("LOOP_STUDIO_LLAMA_PORT", raw) };
+            assert_eq!(
+                server_port(),
+                common::llama_port(),
+                "LOOP_STUDIO_LLAMA_PORT={raw:?}: writer and reader disagree"
+            );
+            // And the specific failure that motivated the delegation.
+            if common::port_from(raw).is_none() {
+                assert_ne!(server_port(), 0, "{raw:?} must not reach --port");
+            }
+            unsafe {
+                match saved {
+                    Some(v) => std::env::set_var("LOOP_STUDIO_LLAMA_PORT", v),
+                    None => std::env::remove_var("LOOP_STUDIO_LLAMA_PORT"),
+                }
+            }
+        }
+    }
 
     #[test]
     fn thermal_context_steps_down() {
-        assert_eq!(thermal_default_context("Nominal"), 16384);
-        assert_eq!(thermal_default_context("Fair"), 8192);
-        assert_eq!(thermal_default_context("Serious"), 8192);
-        assert_eq!(thermal_default_context("Critical"), 4096);
+        assert_eq!(thermal_default_context(Some("Nominal")), 16384);
+        assert_eq!(thermal_default_context(Some("Fair")), 8192);
+        assert_eq!(thermal_default_context(Some("Serious")), 8192);
+        assert_eq!(thermal_default_context(Some("Critical")), 4096);
     }
 
     #[test]

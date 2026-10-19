@@ -1,0 +1,55 @@
+# Loop Studio queue-lock reclaim parity table
+#
+# `~/.lac/locks/loop-studio-tasks` is taken by two implementations of one rule: the
+# Rust one in `common::lock_is_reclaimable` (used by `loop-studio worker`, `loop-studio loop`)
+# and the Swift one in `LoopsStore.lockIsReclaimable` (used by the Studio).
+# They cannot call each other — Swift and Rust, one filesystem — so instead both
+# test suites read THIS file and assert the same verdicts. A change to one
+# implementation that the other does not share fails that other's gate, which
+# is what turns "kept in sync by hand" into "provably the same rule".
+#
+# This file is tracked by `make delivery-index`; a test that reads it fails if
+# it is missing.
+#
+# Columns, tab-separated:
+#   case        a name for the row, for a failure message
+#   owner       the record in the lock directory: `-` absent, empty = the
+#               empty-file window between O_TRUNC and the write
+#   dir_age     seconds since the lock directory was last modified, or `-` when
+#               the age could not be determined
+#   probe       the liveness probe's answer: alive | dead | unprobeable
+#   expect      reclaim | keep
+#
+# The rule, for reference: the only unconditional reclaim is a pid that is
+# provably gone. A live owner keeps the lock regardless of age. Everything else
+# — no record, an empty record, an unparsable one, a pid that cannot be probed
+# — waits out the backstop (30s), which is what the empty-record window needs.
+
+# --- no record at all: only the backstop may reclaim -------------------------
+no-record-fresh	-	0	dead	keep
+no-record-at-backstop	-	30	dead	reclaim
+no-record-aged	-	900	dead	reclaim
+no-record-unknown-age	-	-	dead	keep
+
+# --- the O_TRUNC window: the file exists and is empty -------------------------
+empty-record-fresh	 	0	dead	keep
+empty-record-at-backstop	 	30	dead	reclaim
+
+# --- a record that will not parse --------------------------------------------
+garbage-record-fresh	garbage	0	dead	keep
+garbage-record-at-backstop	garbage	30	dead	reclaim
+negative-pid-fresh	-1 1700000000	0	dead	keep
+negative-pid-aged	-1 1700000000	45	dead	reclaim
+
+# --- a real owner, in the format the CLI writes -------------------------------
+live-owner-ancient	99999 1700000000	600	alive	keep
+live-owner-just-born	99999 1800000000	0	alive	keep
+dead-owner-fresh	99999 1800000000	0	dead	reclaim
+dead-owner-ancient	99999 1700000000	600	dead	reclaim
+unprobeable-fresh	99999 1700000000	0	unprobeable	keep
+unprobeable-just-under	99999 1700000000	29	unprobeable	keep
+unprobeable-at-backstop	99999 1700000000	30	unprobeable	reclaim
+
+# --- the legacy pid-only record the Studio used to write ----------------------
+legacy-live-owner	99999	5	alive	keep
+legacy-dead-owner	99999	5	dead	reclaim

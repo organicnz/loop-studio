@@ -1,5 +1,5 @@
 [package]
-name = "lac-bootstrap"
+name = "loop-studio"
 version = "2.0.0"
 edition = "2024"
 
@@ -20,16 +20,16 @@ name = "pull-models"
 path = "src/pull_models.rs"
 
 [[bin]]
-name = "lac-tui"
-path = "src/lac_tui.rs"
+name = "loop-studio-tui"
+path = "src/loop_studio_tui.rs"
 
 [[bin]]
-name = "lac"
-path = "src/lac.rs"
+name = "loop-studio"
+path = "src/loop_studio.rs"
 
 [[bin]]
-name = "lac-router"
-path = "src/lac_router.rs"
+name = "loop-studio-router"
+path = "src/loop_studio_router.rs"
 
 [[bin]]
 name = "kv-manage"

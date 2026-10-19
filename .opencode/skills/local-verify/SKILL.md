@@ -13,9 +13,9 @@ Checks that:
 
 ## Workflow
 
-1. Run `lac doctor` or `./rust-src/target/release/lac doctor` (pure Rust diagnostic suite)
-2. Run `curl -s http://127.0.0.1:8000/lac/status` to inspect `lac-router` gateway and backend health
-3. Run `lac status` or check the telemetry in **LAC Studio** / `lac-tui`
+1. Run `loop-studio doctor` or `./rust-src/target/release/loop-studio doctor` (pure Rust diagnostic suite)
+2. Run `curl -s http://127.0.0.1:8000/loop-studio/status` to inspect `loop-studio-router` gateway and backend health
+3. Run `loop-studio status` or check the telemetry in **Loop Studio** / `loop-studio-tui`
 4. Run a quick `chat/completions` ping against the gateway: `POST http://127.0.0.1:8000/v1/chat/completions` with `{"model":"qwen3.8-27b","messages":[{"role":"user","content":"ping"}],"temperature":0}`
 5. Report: active backend (MLX/llama/Ollama), TTFT, free RAM, and thermal state
 

@@ -10,7 +10,7 @@ use std::process::Command;
 
 fn main() {
     common::ignore_sigpipe();
-    eprintln!("=== LAC pull-models v2.6 (Rust) ===");
+    eprintln!("=== Loop Studio pull-models v2.6 (Rust) ===");
     let home = common::home_dir();
 
     // 27B-class weights want headroom: warn below 32 GiB total, never fail.
@@ -67,8 +67,23 @@ fn main() {
         format!("{}/models--mlx-community--Qwen3.8-27B-8bit", hf_hub),
         format!("{}/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit", home),
     ] {
-        let _ = fs::create_dir_all(&d);
-        eprintln!("  ensured: {}", d);
+        // The result used to be discarded and "ensured" printed regardless, so
+        // a read-only or full volume reported a provisioned cache that could
+        // not exist, and the run still exited 0. This is the step whose whole
+        // purpose is to pre-stage the MLX cache, so failing it is a failure of
+        // the run, not a detail.
+        match fs::create_dir_all(&d) {
+            Ok(()) => eprintln!("  ensured: {}", d),
+            Err(e) => {
+                eprintln!("  FAILED to create {}: {}", d, e);
+                eprintln!(
+                    "    the MLX lane will not load until this exists — check free space and \
+                     permissions on {}",
+                    common::model_base()
+                );
+                failed += 1;
+            }
+        }
     }
 
     if failed > 0 {
@@ -93,6 +108,10 @@ fn ram_fit_note(total_gib: Option<f64>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    // A `#[test]` that loses its attribute is valid Rust that never runs:
+    // the suite goes one test quieter and stays green. Fail the build instead.
+    #![deny(dead_code)]
+
     use super::*;
 
     #[test]

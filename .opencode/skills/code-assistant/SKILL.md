@@ -1,6 +1,6 @@
 ---
 name: Code Assistant
-description: Agentic code reasoning, refactoring, test generation, and bug audits via LAC Studio & CLI
+description: Agentic code reasoning, refactoring, test generation, and bug audits via Loop Studio & CLI
 ---
 
 ## What it does
@@ -13,9 +13,9 @@ The **Code Assistant** provides dedicated, autonomous systems engineering and pr
 
 ## Usage Modes
 
-### 1. In LAC Studio (macOS Native App)
+### 1. In Loop Studio (macOS Native App)
 
-1. Open **LAC Studio**.
+1. Open **Loop Studio**.
 2. Click **Code Assistant** in the sidebar under `WORKSPACE` (or press `⌘2`).
 3. Paste or type your code into the left **Code Canvas** (supports Rust, Swift, Python, TypeScript, Go, C++, Shell, SQL).
 4. Click any quick action capsule at the top:
@@ -27,22 +27,22 @@ The **Code Assistant** provides dedicated, autonomous systems engineering and pr
 5. Or type custom instructions in the bottom prompt bar.
 6. Click **"Apply to Editor"** to immediately merge refactored code back into the source canvas with 1-click undo.
 
-### 2. From Terminal via Pure Rust CLI (`lac code`)
+### 2. From Terminal via Pure Rust CLI (`loop-studio code`)
 
 Run agentic coding prompts directly from your shell without opening an editor:
 
 ```bash
 # Review and refactor an existing file
-lac code -f src/main.rs "Refactor to be thread-safe with zero allocations"
+loop-studio code -f src/main.rs "Refactor to be thread-safe with zero allocations"
 
 # Generate unit tests
-lac code -f src/lib.rs "Generate comprehensive tests covering empty inputs and boundary conditions"
+loop-studio code -f src/lib.rs "Generate comprehensive tests covering empty inputs and boundary conditions"
 
 # Pipe code from stdin
-cat rust-src/src/lac_router.rs | lac code "Audit socket error handling and ensure SIGPIPE safety"
+cat rust-src/src/loop_studio_router.rs | loop-studio code "Audit socket error handling and ensure SIGPIPE safety"
 
 # Direct implementation instruction
-lac code "Write a lock-free multi-producer single-consumer ring buffer in Rust"
+loop-studio code "Write a lock-free multi-producer single-consumer ring buffer in Rust"
 ```
 
 ## Model Selection
@@ -51,5 +51,5 @@ lac code "Write a lock-free multi-producer single-consumer ring buffer in Rust"
 - Recommended for pure coding: `Qwen/Qwen2.5-Coder-32B-Instruct` or `mlx-community/Qwen2.5-Coder-32B-Instruct-4bit`
 - Override via environment variable:
   ```bash
-  export LAC_CODE_MODEL="mlx-community/Qwen2.5-Coder-32B-Instruct-4bit"
+  export LOOP_STUDIO_CODE_MODEL="mlx-community/Qwen2.5-Coder-32B-Instruct-4bit"
   ```

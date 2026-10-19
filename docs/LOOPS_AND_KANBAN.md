@@ -4,8 +4,8 @@
 
 Local Agentic Coding operates under strict non-stop reliability rules defined in `AGENTS.md`. Vague tasks fail; well-scoped, chunked tasks succeed.
 
-- **Task Queue**: Managed via `~/todo/lac-tasks.yaml`.
-- **Loop Definitions**: Stored in `~/todo/lac-loops/*.yaml`.
+- **Task Queue**: Managed via `~/todo/loop-studio-tasks.yaml`.
+- **Loop Definitions**: Stored in `~/todo/loop-studio-loops/*.yaml`.
 - **Reliability Gate**: Tests-as-gate + dual-model review + mandatory human git review.
 
 ---
@@ -41,18 +41,18 @@ Round 3+: ABORT AND ESCALATE         (Ambiguous requirements; human intervention
 
 ```bash
 # 1. Initialize loops and task queue in ~/todo/
-lac loop init
+loop-studio loop init
 
 # 2. Inspect available loops
-lac loop list
+loop-studio loop list
 
 # 3. Validate a loop definition
-lac loop validate ~/todo/lac-loops/daily-coding.yaml
+loop-studio loop validate ~/todo/loop-studio-loops/daily-coding.yaml
 
 # 4. Check stack readiness before long autonomous runs
-lac status
-lac doctor
+loop-studio status
+loop-studio doctor
 
 # 5. Run OpenCode with loop orchestrator
-opencode2 run 'Use the loop-orchestrator skill --run ~/todo/lac-loops/daily-coding.yaml'
+opencode2 run 'Use the loop-orchestrator skill --run ~/todo/loop-studio-loops/daily-coding.yaml'
 ```

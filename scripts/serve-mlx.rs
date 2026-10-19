@@ -6,7 +6,7 @@
 //! Usage:  ./scripts/bin/serve-mlx [MODEL] [--port PORT]
 //!
 //! A dependency-free reference fallback. Day to day, prefer
-//! `lac serve mlx` (port-drift handling, thermal-aware context,
+//! `loop-studio serve mlx` (port-drift handling, thermal-aware context,
 //! KeepAlive daemon, readiness reporting). Unlike the old bash script,
 //! this launcher preflights the binary and the port and propagates the
 //! server's exit code instead of masking failures.
@@ -63,7 +63,7 @@ fn main() {
     }
     if port_in_use(port) {
         eprintln!("error: 127.0.0.1:{} is already bound.", port);
-        eprintln!("hint: use --port, or run `lac serve mlx` (finds a free port).");
+        eprintln!("hint: use --port, or run `loop-studio serve mlx` (finds a free port).");
         std::process::exit(1);
     }
 

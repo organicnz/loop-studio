@@ -1,4 +1,4 @@
-# Homebrew bundle for LAC on Apple Silicon Macs
+# Homebrew bundle for Loop Studio on Apple Silicon Macs
 # Run: brew bundle install
 # Every entry verified with `brew info` / `brew info --cask` Sep 2026.
 # mlx-vlm has no formula — install via: uv tool install mlx-vlm / pip install mlx-vlm
@@ -32,13 +32,15 @@ brew "jujutsu"              # jj binary, Rust git evolution
 brew "lazygit"              # best Git TUI
 brew "uv"                   # Astral Python env (replaces pip/poetry)
 brew "mise"                 # node/python version pinning
-brew "rustup"               # rustup-init; toolchains via `rustup update stable`
+brew "rustup"              # rustup-init; toolchains via `rustup update stable`
+brew "lefthook"            # repository-native pre-commit delivery gate
 # brew "rust"               # NOT used — toolchains via rustup instead
 
 # Python runtimes
 brew "python@3.14"          # current 2026
 
 # LLM inference stacks
+brew "hf"                    # Hugging Face CLI (hf download)
 brew "ollama"               # :11434 v1 endpoint (formula = headless server)
 brew "llama.cpp"            # Metal on by default, llama-server/cli
 brew "mlx-lm"               # mlx_lm.server, fastest decode on Apple Silicon
