@@ -539,7 +539,7 @@ public struct LoopStudioLogoView: View {
                     style: StrokeStyle(lineWidth: max(2.5, size * 0.18), lineCap: .round, lineJoin: .round)
                 )
                 .blur(radius: max(1.5, size * 0.12))
-                .opacity(animated ? (0.65 + 0.25 * sin(phase)) : 0.75)
+                .opacity(animated ? (0.65 + 0.25 * CGFloat(sin(Double(phase)))) : 0.75)
 
             // Optical glass core conduit
             LemniscateLoopShape()
@@ -569,7 +569,7 @@ public struct LoopStudioLogoView: View {
                 .fill(Color.white.opacity(0.95))
                 .frame(width: max(2.5, size * 0.09), height: max(2.5, size * 0.09))
                 .blur(radius: max(0.5, size * 0.02))
-                .scaleEffect(animated ? (1.0 + 0.2 * cos(phase)) : 1.0)
+                .scaleEffect(animated ? (1.0 + 0.2 * CGFloat(cos(Double(phase)))) : 1.0)
         }
         .frame(width: size, height: size * 0.65)
         .onAppear {

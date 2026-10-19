@@ -181,7 +181,12 @@ public struct HFRepoFileItem: Identifiable, Codable, Hashable {
 
 // MARK: - Installed Model Item (LM Studio Local Library)
 
-public struct InstalledModelItem: Identifiable, Hashable {
+/// One model found on the local disk.
+///
+/// `Sendable` because the disk walk runs on a detached task and its results
+/// cross back to the MainActor. Every stored property is an immutable value
+/// type, so the conformance is safe.
+public struct InstalledModelItem: Identifiable, Hashable, Sendable {
     public let id: String
     public let name: String
     public let path: String
@@ -413,25 +418,34 @@ public class ModelHubStore: ObservableObject {
     // MARK: - On-Device Model Discovery (LM Studio style)
 
     /// Disk walk runs on a background queue; only the publish hops to MainActor.
+    ///
+    /// The detached task computes the results and hands back plain values; the
+    /// `self` reference is only ever touched on the MainActor, inside the
+    /// `Task { @MainActor in }` that publishes them. Capturing `self` in the
+    /// detached closure and then unwrapping it inside `MainActor.run` sent a
+    /// MainActor-isolated reference across the isolation boundary, which
+    /// Swift 6 rejects as a data race.
     public func scanInstalledModels() {
         isScanningInstalled = true
-        Task.detached(priority: .utility) { [weak self] in
-            let found = Self.walkInstalledModels()
-            let freeDisk: Int64 = {
-                let home = NSHomeDirectory()
-                if let values = try? URL(fileURLWithPath: home).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey]) {
-                    return values.volumeAvailableCapacityForImportantUsage ?? Int64(values.volumeAvailableCapacity ?? 0)
-                }
-                return 0
-            }()
-            await MainActor.run {
-                guard let self else { return }
-                self.freeDiskBytes = freeDisk
-                self.installedModels = found.sorted { $0.sizeBytes > $1.sizeBytes }
-                self.totalInstalledBytes = found.reduce(0) { $0 + $1.sizeBytes }
-                self.isScanningInstalled = false
-            }
+        Task { @MainActor [weak self] in
+            let (found, freeDisk) = await Task.detached(priority: .utility) {
+                (Self.walkInstalledModels(), Self.freeDiskBytes())
+            }.value
+            guard let self else { return }
+            self.freeDiskBytes = freeDisk
+            self.installedModels = found.sorted { $0.sizeBytes > $1.sizeBytes }
+            self.totalInstalledBytes = found.reduce(0) { $0 + $1.sizeBytes }
+            self.isScanningInstalled = false
         }
+    }
+
+    /// Free space on the volume holding the home directory, in bytes.
+    nonisolated private static func freeDiskBytes() -> Int64 {
+        let home = NSHomeDirectory()
+        if let values = try? URL(fileURLWithPath: home).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey]) {
+            return values.volumeAvailableCapacityForImportantUsage ?? Int64(values.volumeAvailableCapacity ?? 0)
+        }
+        return 0
     }
 
     /// Synchronous directory walk. Called from a detached task only — never on MainActor.
