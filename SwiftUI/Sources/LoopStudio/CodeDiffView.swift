@@ -436,6 +436,85 @@ public struct CodeDiffView: View {
 
     // MARK: Hunk Card
 
+    /// The accepted/rejected/pending badge.
+    ///
+    /// Extracted from `hunkCard`: as one inline expression the whole card was
+    /// a single type-check expression, and the compiler gave up on it with
+    /// "unable to type-check this expression in reasonable time" on a slower
+    /// toolchain. Each piece is now its own view.
+    @ViewBuilder
+    private func stateBadge(_ state: HunkState) -> some View {
+        switch state {
+        case .pending:
+            EmptyView()
+        case .accepted:
+            HStack(spacing: 3) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 8, weight: .bold))
+                Text("Accepted")
+                    .font(.system(size: 9.5, weight: .medium))
+            }
+            .foregroundColor(.green)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(Color.green.opacity(0.18)))
+        case .rejected:
+            HStack(spacing: 3) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                Text("Rejected")
+                    .font(.system(size: 9.5, weight: .medium))
+            }
+            .foregroundColor(.red)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(Color.red.opacity(0.18)))
+        }
+    }
+
+    /// The per-chunk accept/reject buttons.
+    private func chunkActions(_ hunk: DiffHunk) -> some View {
+        HStack(spacing: 6) {
+            Button {
+                toggleHunk(hunkIndex: hunk.hunkIndex, state: .rejected)
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                    Text("Reject")
+                        .font(.system(size: 10))
+                }
+                .foregroundColor(hunk.state == .rejected ? .red : .secondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule().fill(hunk.state == .rejected ? Color.red.opacity(0.15) : Color.white.opacity(0.06))
+                )
+            }
+            .buttonStyle(.plain)
+            .help("Reject this chunk and keep original lines")
+
+            Button {
+                toggleHunk(hunkIndex: hunk.hunkIndex, state: .accepted)
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9, weight: .bold))
+                    Text("Accept")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .foregroundColor(hunk.state == .accepted ? .green : .accentColor)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule().fill(hunk.state == .accepted ? Color.green.opacity(0.20) : Color.accentColor.opacity(0.15))
+                )
+            }
+            .buttonStyle(.plain)
+            .help("Accept this chunk and apply changes")
+        }
+    }
+
     private func hunkCard(_ hunk: DiffHunk) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             // Hunk Header with chunk-level controls
@@ -453,73 +532,10 @@ public struct CodeDiffView: View {
                 Spacer()
 
                 // State badge
-                switch hunk.state {
-                case .pending:
-                    EmptyView()
-                case .accepted:
-                    HStack(spacing: 3) {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 8, weight: .bold))
-                        Text("Accepted")
-                            .font(.system(size: 9.5, weight: .medium))
-                    }
-                    .foregroundColor(.green)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.green.opacity(0.18)))
-                case .rejected:
-                    HStack(spacing: 3) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 8, weight: .bold))
-                        Text("Rejected")
-                            .font(.system(size: 9.5, weight: .medium))
-                    }
-                    .foregroundColor(.red)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.red.opacity(0.18)))
-                }
+                stateBadge(hunk.state)
 
                 // Chunk actions
-                HStack(spacing: 6) {
-                    Button {
-                        toggleHunk(hunkIndex: hunk.hunkIndex, state: .rejected)
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 9, weight: .bold))
-                            Text("Reject")
-                                .font(.system(size: 10))
-                        }
-                        .foregroundColor(hunk.state == .rejected ? .red : .secondary)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(
-                            Capsule().fill(hunk.state == .rejected ? Color.red.opacity(0.15) : Color.white.opacity(0.06))
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .help("Reject this chunk and keep original lines")
-
-                    Button {
-                        toggleHunk(hunkIndex: hunk.hunkIndex, state: .accepted)
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 9, weight: .bold))
-                            Text("Accept")
-                                .font(.system(size: 10, weight: .semibold))
-                        }
-                        .foregroundColor(hunk.state == .accepted ? .green : .accentColor)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(
-                            Capsule().fill(hunk.state == .accepted ? Color.green.opacity(0.20) : Color.accentColor.opacity(0.15))
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .help("Accept this chunk and apply changes")
-                }
+                chunkActions(hunk)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)

@@ -331,6 +331,80 @@ public struct CodeAssistantView: View {
 
     // MARK: Left Editor Canvas
 
+    /// One tab in the working-set bar.
+    ///
+    /// Extracted from `leftEditorCanvas` rather than inlined in the
+    /// `ForEach`: as a single expression the whole bar was one type-check
+    /// expression, and the compiler gave up on it with "unable to type-check
+    /// this expression in reasonable time" on a slower toolchain. One view
+    /// per tab is both faster to type-check and easier to read.
+    private func tabChip(_ tab: EditorTab) -> some View {
+        let isActive = tab.id == store.activeTabId
+        return HStack(spacing: 6) {
+            Image(systemName: iconForTab(tab))
+                .font(.system(size: 10))
+                .foregroundColor(isActive ? .accentColor : .secondary)
+
+            Text(tab.title)
+                .font(.system(size: 11.5, weight: isActive ? .semibold : .regular))
+                .foregroundColor(isActive ? .primary : .secondary)
+
+            if tab.isModified {
+                Circle()
+                    .fill(Color.orange)
+                    .frame(width: 5, height: 5)
+            }
+
+            Button {
+                LiquidGlass.haptic(.alignment)
+                store.closeTab(id: tab.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(.secondary.opacity(0.7))
+                    .padding(3)
+                    .background(Circle().fill(Color.white.opacity(0.06)))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isActive ? Color.white.opacity(0.12) : Color.white.opacity(0.03))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(isActive ? Color.white.opacity(0.18) : Color.clear, lineWidth: 1)
+                )
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            LiquidGlass.haptic(.alignment)
+            store.selectTab(id: tab.id)
+        }
+        .contextMenu {
+            Button("Close Tab") {
+                store.closeTab(id: tab.id)
+            }
+            Button("Close Other Tabs") {
+                store.closeOtherTabs(id: tab.id)
+            }
+            Button("Close All Tabs") {
+                store.closeAllTabs()
+            }
+            Divider()
+            if let url = tab.url {
+                Button("Reveal in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+                Button("Copy Path") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(url.path, forType: .string)
+                }
+            }
+        }
+    }
+
     private func iconForTab(_ tab: EditorTab) -> String {
         let ext = (tab.url?.pathExtension ?? "").lowercased()
         switch ext {
@@ -350,69 +424,7 @@ public struct CodeAssistantView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     ForEach(store.tabs) { tab in
-                        HStack(spacing: 6) {
-                            Image(systemName: iconForTab(tab))
-                                .font(.system(size: 10))
-                                .foregroundColor(tab.id == store.activeTabId ? .accentColor : .secondary)
-
-                            Text(tab.title)
-                                .font(.system(size: 11.5, weight: tab.id == store.activeTabId ? .semibold : .regular))
-                                .foregroundColor(tab.id == store.activeTabId ? .primary : .secondary)
-
-                            if tab.isModified {
-                                Circle()
-                                    .fill(Color.orange)
-                                    .frame(width: 5, height: 5)
-                            }
-
-                            Button {
-                                LiquidGlass.haptic(.alignment)
-                                store.closeTab(id: tab.id)
-                            } label: {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundColor(.secondary.opacity(0.7))
-                                    .padding(3)
-                                    .background(Circle().fill(Color.white.opacity(0.06)))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(tab.id == store.activeTabId ? Color.white.opacity(0.12) : Color.white.opacity(0.03))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .strokeBorder(tab.id == store.activeTabId ? Color.white.opacity(0.18) : Color.clear, lineWidth: 1)
-                                )
-                        )
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            LiquidGlass.haptic(.alignment)
-                            store.selectTab(id: tab.id)
-                        }
-                        .contextMenu {
-                            Button("Close Tab") {
-                                store.closeTab(id: tab.id)
-                            }
-                            Button("Close Other Tabs") {
-                                store.closeOtherTabs(id: tab.id)
-                            }
-                            Button("Close All Tabs") {
-                                store.closeAllTabs()
-                            }
-                            Divider()
-                            if let url = tab.url {
-                                Button("Reveal in Finder") {
-                                    NSWorkspace.shared.activateFileViewerSelecting([url])
-                                }
-                                Button("Copy Path") {
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(url.path, forType: .string)
-                                }
-                            }
-                        }
+                        tabChip(tab)
                     }
 
                     // New tab button
