@@ -301,7 +301,9 @@ public class LoopsStore: ObservableObject {
 
     private var queueLockURL: URL {
         if let tasksWriteURLOverride {
-            return tasksWriteURLOverride.deletingLastPathComponent().appendingPathComponent(".lac-queue.lock")
+            // Test-only override: a sibling of the queue file, so the test
+            // does not contend with the real lock in ~/.lac/locks.
+            return tasksWriteURLOverride.deletingLastPathComponent().appendingPathComponent(".loop-studio-queue.lock")
         }
         return URL(fileURLWithPath: Self.studioHome())
             .appendingPathComponent(".lac/locks/loop-studio-tasks")
