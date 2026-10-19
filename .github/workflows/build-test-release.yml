@@ -20,7 +20,11 @@ permissions:
 jobs:
   test:
     name: Test
-    runs-on: macos-14
+    # macos-15 defaults to Xcode 16.4, whose toolchain is Swift 6 — the
+    # version the Swift package requires. The macos-14 image defaults to
+    # Xcode 15.4 (Swift 5.10) and is itself being deprecated, so this
+    # moves off it rather than working around it.
+    runs-on: macos-15
     defaults:
       run:
         shell: bash
@@ -28,6 +32,16 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # The Swift package declares `swift-tools-version: 6.0`. Select the
+      # Xcode that ships Swift 6 explicitly rather than inheriting whatever
+      # the image happens to default to — SwiftPM refuses to even parse the
+      # manifest otherwise, and the failure reads as a build error rather
+      # than a toolchain mismatch.
+      - name: Select Xcode (Swift 6)
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.4.app
+          swift --version
 
       - name: Setup Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -103,7 +117,7 @@ jobs:
             - `kv-manage` — token provenance + risk levels
 
             ### Notes
-            - Built on GitHub-hosted `macos-14` (ARM64), same pattern as foodshare (`ubuntu-24.04` / `macos-14`)
+            - Built on GitHub-hosted `macos-15` (ARM64), same pattern as foodshare (`ubuntu-24.04` / `macos-15`)
             - KV provenance chain: explicit → env → router 1h estimate → legacy probe
             - Circuit breaker: 3-strike/30s EWMA backend failure handler
             - Fastest-mode routing: reorder backends by measured latency
