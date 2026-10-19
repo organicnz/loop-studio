@@ -619,7 +619,7 @@ class NetworkManager: ObservableObject {
     /// which silently sent the child's stderr to null and lost the complaint
     /// this log exists to capture.
     nonisolated static func detachedLogName(for arguments: [String]) -> String {
-        let raw = arguments.first.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "lac"
+        let raw = arguments.first.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "loop-studio"
         let safe = String(raw.unicodeScalars.map { scalar in
             CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : "-"
         })

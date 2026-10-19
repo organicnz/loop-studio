@@ -4,7 +4,7 @@ import Testing
 @testable import LoopStudio
 
 private func testDirectory() -> URL {
-    let url = FileManager.default.temporaryDirectory.appendingPathComponent("lac-swift-tests-\(UUID().uuidString)")
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("loop-studio-swift-tests-\(UUID().uuidString)")
     try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
 }
@@ -14,6 +14,8 @@ private func testDirectory() -> URL {
 struct ConnectionStoreTests {
     @Test @MainActor func buildsSafeGatewayURLs() {
         let store = LoopStudioConnectionStore(host: "mac.tailabc123.ts.net", port: 443, useTLS: true, token: "")
+        // The pre-rename paths are still served, so an existing script keeps
+        // working. The canonical ones are `/loop-studio/*`.
         #expect(store.url(path: "/lac/status")?.absoluteString == "https://mac.tailabc123.ts.net:443/lac/status")
         #expect(store.url(path: "/lac/switch?target=llama")?.absoluteString == "https://mac.tailabc123.ts.net:443/lac/switch?target=llama")
 
@@ -1021,7 +1023,7 @@ struct QueueLockTests {
         let store = LoopsStore(tasksURL: root.appendingPathComponent("tasks.yaml"))
 
         // A lock held by a process that is alive — this one.
-        let lock = root.appendingPathComponent(".lac-queue.lock")
+        let lock = root.appendingPathComponent(".loop-studio-queue.lock")
         try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: true)
         let me = ProcessInfo.processInfo.processIdentifier
         try "\(me) \(Int(Date().timeIntervalSince1970))".write(
@@ -1077,7 +1079,7 @@ struct QueueLockTests {
     @Test func theOwnerRecordIsWrittenForTheCliToRead() async throws {
         let root = testDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let lock = root.appendingPathComponent(".lac-queue.lock")
+        let lock = root.appendingPathComponent(".loop-studio-queue.lock")
         let me = ProcessInfo.processInfo.processIdentifier
         let taken = await LoopsStore.acquireQueueLock(at: lock)
         #expect(taken)
@@ -1385,7 +1387,7 @@ struct LockParityTests {
     @Test func aLiveOwnerKeepsTheLockPastTheBackstop() async throws {
         let root = testDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let lock = root.appendingPathComponent(".lac-queue.lock")
+        let lock = root.appendingPathComponent(".loop-studio-queue.lock")
         let me = ProcessInfo.processInfo.processIdentifier
         try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: true)
         try "\(me) \(Int(Date().timeIntervalSince1970))".write(
@@ -1701,7 +1703,7 @@ struct QueueReconcileTests {
         await store.addTask(TaskItem(id: "lac-seed", task: "seed", priority: .high))
 
         // A lock held by a process that is alive — this one.
-        let lock = root.appendingPathComponent(".lac-queue.lock")
+        let lock = root.appendingPathComponent(".loop-studio-queue.lock")
         try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: true)
         let me = ProcessInfo.processInfo.processIdentifier
         try "\(me) \(Int(Date().timeIntervalSince1970))".write(
@@ -1903,7 +1905,7 @@ extension QueueReconcileTests {
         await store.addTask(TaskItem(id: "lac-seed", task: "seed", priority: .high))
         store.reconcileWithDisk()
 
-        let lock = root.appendingPathComponent(".lac-queue.lock")
+        let lock = root.appendingPathComponent(".loop-studio-queue.lock")
         try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: true)
         let me = ProcessInfo.processInfo.processIdentifier
         try "\(me) \(Int(Date().timeIntervalSince1970))".write(

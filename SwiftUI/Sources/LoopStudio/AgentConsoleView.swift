@@ -351,7 +351,7 @@ public struct AgentConsoleView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(console.isRunning)
-                .help("Run lac status check")
+                .help("Run loop-studio status check")
                 .accessibilityIdentifier("stackHealthButton")
 
                 Divider()
