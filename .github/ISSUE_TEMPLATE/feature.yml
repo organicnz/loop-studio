@@ -1,0 +1,60 @@
+name: Feature or bug
+about: Propose a change to Loop Studio
+title: ''
+labels: ''
+assignees: ''
+
+---
+
+## What is the problem?
+
+<!--
+What is broken, missing, or hard to do today? If this is a bug, what did you
+expect to happen, and what happened instead?
+
+Lead with the behaviour, not the implementation. "The Studio shows an empty
+board while the worker is draining a queue" is a problem statement;
+"LoopsStore.swift reads the wrong path" is a diagnosis.
+-->
+
+## What did you try?
+
+<!--
+If this is a bug, what did you already check? Knowing what has been ruled
+out saves everyone time.
+-->
+
+## Proposed solution
+
+<!--
+Not required for a bug report. If you have an idea, sketch it — but a sketch
+is more useful than a finished design, because a finished design hides the
+trade-offs.
+-->
+
+## Which part of the stack?
+
+- [ ] Rust backend (`rust-src/`)
+- [ ] Native macOS app (`SwiftUI/`)
+- [ ] Gateway / router (`loop-studio-router`)
+- [ ] CLI (`loop-studio`)
+- [ ] Worker / Hermes (`loop-studio worker`)
+- [ ] Skills, templates, or launchd supervision
+- [ ] Docs only
+
+## Environment
+
+<!--
+The stack is RAM-pressure and thermal aware, so these change the behaviour.
+-->
+
+- macOS version:
+- Chip:
+- RAM:
+- `loop-studio doctor` output (paste it — it is the project's own diagnostic):
+
+## Checklist
+
+- [ ] I searched the existing issues and the audit report for this.
+- [ ] I read `docs/AGENTS.md` and `CONTRIBUTING.md`.
+- [ ] This is one problem. Unrelated changes belong in their own issue.

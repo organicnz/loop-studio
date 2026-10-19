@@ -4820,8 +4820,14 @@ mod tests {
 
         // ...and it does converge. The refresh runs on its own thread, so the
         // wait is for the thread, not for the caller.
+        //
+        // The wait is on the *memo*, not on the counter: the rebuild bumps the
+        // counter and then stores the new body, so a counter that has ticked
+        // does not yet mean the value is visible. Waiting on the counter and
+        // then reading the memo is a race the scheduler can win — it did, and
+        // the failure looked like the memo never refreshing at all.
         let deadline = Instant::now() + Duration::from_secs(5);
-        while calls.load(Ordering::SeqCst) <= before && Instant::now() < deadline {
+        while memo.fresh().is_none() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(
