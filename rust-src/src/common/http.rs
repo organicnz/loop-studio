@@ -47,7 +47,12 @@ pub fn http_get(port: u16, path: &str, timeout_ms: u64) -> Option<(u16, String)>
     http_get_auth(port, path, timeout_ms, port == gateway_port())
 }
 
-pub fn http_get_auth(port: u16, path: &str, timeout_ms: u64, authorized: bool) -> Option<(u16, String)> {
+pub fn http_get_auth(
+    port: u16,
+    path: &str,
+    timeout_ms: u64,
+    authorized: bool,
+) -> Option<(u16, String)> {
     use std::io::{Read, Write};
     let addr = format!("127.0.0.1:{}", port);
     let sa: std::net::SocketAddr = addr.parse().ok()?;
@@ -108,7 +113,12 @@ pub fn http_post(port: u16, path: &str, body: &str, timeout_ms: u64) -> Option<(
 }
 
 /// Blocking HTTP POST to a specific socket address with total deadline budget.
-pub fn http_post_addr(addr: &str, path: &str, body: &str, budget: Duration) -> Option<(u16, String)> {
+pub fn http_post_addr(
+    addr: &str,
+    path: &str,
+    body: &str,
+    budget: Duration,
+) -> Option<(u16, String)> {
     http_post_addr_auth(addr, path, body, budget, false)
 }
 
@@ -154,7 +164,9 @@ pub fn http_post_addr_auth(
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 16384];
     loop {
-        let remaining = budget.checked_sub(start.elapsed()).unwrap_or(Duration::ZERO);
+        let remaining = budget
+            .checked_sub(start.elapsed())
+            .unwrap_or(Duration::ZERO);
         if remaining.is_zero() {
             return None;
         }
@@ -178,7 +190,13 @@ pub fn http_post_addr_auth(
         return None;
     }
     let text = String::from_utf8_lossy(&buf).to_string();
-    let code: u16 = text.lines().next()?.split_whitespace().nth(1)?.parse().ok()?;
+    let code: u16 = text
+        .lines()
+        .next()?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()?;
     let start = text.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
     Some((code, text[start.min(text.len())..].to_string()))
 }

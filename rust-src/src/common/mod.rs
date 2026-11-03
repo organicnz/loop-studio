@@ -29,19 +29,18 @@ pub use git::{
 };
 #[allow(unused_imports)]
 pub use http::{
-    http_get, http_get_auth, http_post, http_post_addr, http_post_addr_auth, http_ready,
-    port_up, port_up_ms, wait_for_http, wait_for_port,
+    http_get, http_get_auth, http_post, http_post_addr, http_post_addr_auth, http_ready, port_up,
+    port_up_ms, wait_for_http, wait_for_port,
 };
 #[allow(unused_imports)]
 pub use lock::{acquire_lock, DirLock};
 #[allow(unused_imports)]
 pub use logs::{
     append_jsonl, event_log_path, is_project_log_name, lac_logs_footprint, log_event,
-    log_file_name, log_file_names, log_names_for, log_which_names, logs_dir,
-    oldest_task_logs, oldest_task_logs_in, purge_rotated_generations, rotate_log_if_large,
-    spawn_log_rotator, task_logs_dir, task_logs_dir_in, task_logs_footprint,
-    task_logs_footprint_in, trim_task_logs, trim_task_logs_in,
-    LOG_KEEP, LOG_MAX_BYTES, TASK_LOG_KEEP, TASK_LOG_MAX_BYTES,
+    log_file_name, log_file_names, log_names_for, log_which_names, logs_dir, oldest_task_logs,
+    oldest_task_logs_in, purge_rotated_generations, rotate_log_if_large, spawn_log_rotator,
+    task_logs_dir, task_logs_dir_in, task_logs_footprint, task_logs_footprint_in, trim_task_logs,
+    trim_task_logs_in, LOG_KEEP, LOG_MAX_BYTES, TASK_LOG_KEEP, TASK_LOG_MAX_BYTES,
 };
 #[allow(unused_imports)]
 pub use plist::{retarget_launchd_plist, set_plist_string};
@@ -232,7 +231,12 @@ pub fn persist_or_warn(path: &str, contents: &str, ctx: &str) -> bool {
             eprintln!("warning: {} write to {} failed: {}", ctx, path, e);
             append_jsonl(
                 &format!("{}/event.log", state_dir()),
-                &format!("{{\"ts\":{},\"level\":\"warn\",\"ctx\":\"{}\",\"err\":\"{}\"}}", now_unix(), ctx, e),
+                &format!(
+                    "{{\"ts\":{},\"level\":\"warn\",\"ctx\":\"{}\",\"err\":\"{}\"}}",
+                    now_unix(),
+                    ctx,
+                    e
+                ),
             );
             false
         }
@@ -337,7 +341,13 @@ pub fn daemon_decision(ever_ready: bool, crashes: u32) -> DaemonDecision {
 }
 
 /// Explanation for giving up, in one voice so both lanes say the same thing.
-pub fn daemon_give_up_reason(engine: &str, model: &str, port: u16, crashes: u32, last: &str) -> String {
+pub fn daemon_give_up_reason(
+    engine: &str,
+    model: &str,
+    port: u16,
+    crashes: u32,
+    last: &str,
+) -> String {
     format!(
         "{engine} failed {crashes} times in a row and never answered HTTP on 127.0.0.1:{port} \
          ({last}). That is a permanent fault, not a transient one — check the model id \
@@ -630,7 +640,11 @@ mod child_tests {
         set_child_pid(4242);
         assert_eq!(CHILD_PID.load(Ordering::SeqCst), 4242);
         clear_child_pid();
-        assert_eq!(CHILD_PID.load(Ordering::SeqCst), 0, "a stale pid must never outlive its child");
+        assert_eq!(
+            CHILD_PID.load(Ordering::SeqCst),
+            0,
+            "a stale pid must never outlive its child"
+        );
         forward_terminate_to_child_process();
         forward_terminate_to_child_process();
     }
@@ -640,7 +654,10 @@ mod child_tests {
         TERMINATING.store(false, Ordering::SeqCst);
         let start = Instant::now();
         assert!(sleep_unless_terminating(Duration::from_millis(200)));
-        assert!(start.elapsed() < Duration::from_secs(2), "overran the sleep");
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "overran the sleep"
+        );
 
         TERMINATING.store(true, Ordering::SeqCst);
         let start = Instant::now();
@@ -671,6 +688,9 @@ mod child_tests {
             Ok("/home/u"),
             "an absolute path is the only thing that names a home"
         );
-        assert_eq!(home_dir_from(Some("/Volumes/AIModels")).as_deref(), Ok("/Volumes/AIModels"));
+        assert_eq!(
+            home_dir_from(Some("/Volumes/AIModels")).as_deref(),
+            Ok("/Volumes/AIModels")
+        );
     }
 }

@@ -46,7 +46,10 @@ impl Drop for DirLock {
 /// Liveness probe: Some(true) alive, Some(false) dead,
 /// None when the probe itself could not run (fail-open unknown).
 fn process_alive(pid: i32) -> Option<bool> {
-    let out = Command::new("kill").args(["-0", &pid.to_string()]).output().ok()?;
+    let out = Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .output()
+        .ok()?;
     Some(out.status.success())
 }
 
@@ -164,15 +167,36 @@ mod tests {
         assert!(lock_is_reclaimable(Some("999999 100"), Some(0), 900, dead));
         // Alive: held, however old the directory is. A forward clock jump must
         // not hand one queue to two workers.
-        assert!(!lock_is_reclaimable(Some("4242 100"), Some(100_000), 900, alive));
+        assert!(!lock_is_reclaimable(
+            Some("4242 100"),
+            Some(100_000),
+            900,
+            alive
+        ));
         // Alive and unprobeable pid: still held.
-        assert!(!lock_is_reclaimable(Some("4242 100"), Some(5), 900, unprobeable));
+        assert!(!lock_is_reclaimable(
+            Some("4242 100"),
+            Some(5),
+            900,
+            unprobeable
+        ));
         // Alive-looking but the platform cannot answer, and it is old enough.
-        assert!(lock_is_reclaimable(Some("4242 100"), Some(901), 900, unprobeable));
+        assert!(lock_is_reclaimable(
+            Some("4242 100"),
+            Some(901),
+            900,
+            unprobeable
+        ));
         // The two states that used to disagree. An empty or unparsable record
         // is exactly the truncate window, so it waits out the backstop like a
         // missing record does; neither is a proof of anything.
-        for record in [Some(""), Some("   "), Some("not-a-pid 5"), Some("-1 5"), None] {
+        for record in [
+            Some(""),
+            Some("   "),
+            Some("not-a-pid 5"),
+            Some("-1 5"),
+            None,
+        ] {
             assert!(
                 !lock_is_reclaimable(record, Some(10), 900, dead),
                 "record {record:?} must not be taken as proof"
@@ -197,8 +221,11 @@ mod tests {
         // Simulate the reclaim: the directory is replaced by someone else's.
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("reclaim creates the directory");
-        fs::write(format!("{}/owner", dir), format!("{} {}", std::process::id() + 1, now_unix()))
-            .expect("new owner record");
+        fs::write(
+            format!("{}/owner", dir),
+            format!("{} {}", std::process::id() + 1, now_unix()),
+        )
+        .expect("new owner record");
         drop(lock);
         assert!(
             std::path::Path::new(&dir).exists(),

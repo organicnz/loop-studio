@@ -68,22 +68,20 @@ pub fn rotate_log_if_large(path: &str, max_bytes: u64, keep: usize) -> u64 {
 /// Keep this daemon's own launchd logs bounded for as long as it runs.
 pub fn spawn_log_rotator(names: &[&str], max_bytes: u64, keep: usize, interval: Duration) {
     let owned: Vec<String> = names.iter().map(|s| s.to_string()).collect();
-    std::thread::spawn(move || {
-        loop {
-            for name in &owned {
-                let path = format!("{}/{}", logs_dir(), name);
-                let rotated = rotate_log_if_large(&path, max_bytes, keep);
-                if rotated > 0 {
-                    eprintln!(
-                        "[loop-studio] rotated {} ({} MiB, keeping {} generations)",
-                        path,
-                        rotated / (1024 * 1024),
-                        keep
-                    );
-                }
+    std::thread::spawn(move || loop {
+        for name in &owned {
+            let path = format!("{}/{}", logs_dir(), name);
+            let rotated = rotate_log_if_large(&path, max_bytes, keep);
+            if rotated > 0 {
+                eprintln!(
+                    "[loop-studio] rotated {} ({} MiB, keeping {} generations)",
+                    path,
+                    rotated / (1024 * 1024),
+                    keep
+                );
             }
-            std::thread::sleep(interval);
         }
+        std::thread::sleep(interval);
     });
 }
 
@@ -121,15 +119,13 @@ pub fn purge_rotated_generations(path: &str) -> (u64, usize) {
     for i in 1..=64 {
         let generation = format!("{}.{}", path, i);
         match fs::metadata(&generation) {
-            Ok(m) if m.is_file() => {
-                match fs::remove_file(&generation) {
-                    Ok(()) => reclaimed += m.len(),
-                    Err(e) => {
-                        failed += 1;
-                        eprintln!("could not remove {generation}: {e}");
-                    }
+            Ok(m) if m.is_file() => match fs::remove_file(&generation) {
+                Ok(()) => reclaimed += m.len(),
+                Err(e) => {
+                    failed += 1;
+                    eprintln!("could not remove {generation}: {e}");
                 }
-            }
+            },
             _ => break,
         }
     }
@@ -315,8 +311,8 @@ pub fn log_event(kind: &str, msg: &str) {
 mod log_rotation_tests {
     #![deny(dead_code)]
 
-    use super::*;
     use super::super::now_unix;
+    use super::*;
 
     #[test]
     fn a_log_is_rotated_past_the_limit_and_keeps_bounded_generations() {
@@ -326,7 +322,10 @@ mod log_rotation_tests {
             now_unix()
         ));
         fs::create_dir_all(&dir).expect("temp dir");
-        let path = dir.join("loop-studio-router.log").to_string_lossy().into_owned();
+        let path = dir
+            .join("loop-studio-router.log")
+            .to_string_lossy()
+            .into_owned();
 
         fs::write(&path, b"small").expect("write");
         assert_eq!(rotate_log_if_large(&path, 100, 3), 0);
@@ -350,7 +349,10 @@ mod log_rotation_tests {
 
         fs::write(&path, vec![b'w'; 110]).expect("write");
         assert_eq!(rotate_log_if_large(&path, 100, 3), 110);
-        assert!(fs::metadata(format!("{path}.4")).is_err(), "kept a fourth generation");
+        assert!(
+            fs::metadata(format!("{path}.4")).is_err(),
+            "kept a fourth generation"
+        );
         assert_eq!(fs::metadata(format!("{path}.3")).unwrap().len(), 150);
 
         let _ = fs::remove_dir_all(&dir);
@@ -388,12 +390,21 @@ mod log_rotation_tests {
             now_unix()
         ));
         fs::create_dir_all(&dir).expect("temp dir");
-        let path = dir.join("router-usage.jsonl").to_string_lossy().into_owned();
+        let path = dir
+            .join("router-usage.jsonl")
+            .to_string_lossy()
+            .into_owned();
 
         for round in 1..=3u8 {
             fs::write(&path, vec![b'x'; 2_000 * u64::from(round) as usize]).expect("write");
-            assert!(rotate_log_if_large(&path, 1_000, 1) > 0, "round {round} must rotate");
-            assert!(fs::metadata(format!("{path}.2")).is_err(), "kept a generation the reader never reads");
+            assert!(
+                rotate_log_if_large(&path, 1_000, 1) > 0,
+                "round {round} must rotate"
+            );
+            assert!(
+                fs::metadata(format!("{path}.2")).is_err(),
+                "kept a generation the reader never reads"
+            );
         }
         assert_eq!(fs::metadata(format!("{path}.1")).unwrap().len(), 6_000);
         let _ = fs::remove_dir_all(&dir);
@@ -454,18 +465,29 @@ mod log_rotation_tests {
         let mut expected = EXPECTED;
         expected.sort_unstable();
         assert_eq!(
-            seen,
-            expected,
+            seen, expected,
             "the parity table is not the agreed set of cases: a row was removed, added or renamed"
         );
     }
 
     #[test]
     fn every_daemon_rotates_the_logs_its_plist_opens() {
-        assert_eq!(log_names_for("router"), &["loop-studio-router.log", "loop-studio-router.err"]);
-        assert_eq!(log_names_for("mlx"), &["loop-studio-serve-mlx.log", "loop-studio-serve-mlx.err"]);
-        assert_eq!(log_names_for("worker"), &["loop-studio-worker.log", "loop-studio-worker.err"]);
-        assert_eq!(log_names_for("nonsense"), &["loop-studio-router.log", "loop-studio-router.err"]);
+        assert_eq!(
+            log_names_for("router"),
+            &["loop-studio-router.log", "loop-studio-router.err"]
+        );
+        assert_eq!(
+            log_names_for("mlx"),
+            &["loop-studio-serve-mlx.log", "loop-studio-serve-mlx.err"]
+        );
+        assert_eq!(
+            log_names_for("worker"),
+            &["loop-studio-worker.log", "loop-studio-worker.err"]
+        );
+        assert_eq!(
+            log_names_for("nonsense"),
+            &["loop-studio-router.log", "loop-studio-router.err"]
+        );
     }
 
     #[test]
@@ -514,8 +536,8 @@ mod log_rotation_tests {
 
 #[cfg(test)]
 mod log_retention_tests {
-    use super::*;
     use super::super::now_unix;
+    use super::*;
 
     #[test]
     fn purging_reclaims_the_generations_and_leaves_the_live_log() {
@@ -525,7 +547,10 @@ mod log_retention_tests {
             now_unix()
         ));
         fs::create_dir_all(&dir).expect("temp dir");
-        let path = dir.join("loop-studio-router.log").to_string_lossy().into_owned();
+        let path = dir
+            .join("loop-studio-router.log")
+            .to_string_lossy()
+            .into_owned();
 
         fs::write(&path, b"live").expect("write live");
         for i in 1..=3 {
@@ -534,9 +559,16 @@ mod log_retention_tests {
         fs::write(dir.join("something-else.log"), b"keep me").expect("write other");
 
         assert_eq!(purge_rotated_generations(&path), (100 + 200 + 300, 0));
-        assert_eq!(fs::read_to_string(&path).unwrap(), "live", "the live log must survive");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "live",
+            "the live log must survive"
+        );
         for i in 1..=3 {
-            assert!(fs::metadata(format!("{path}.{i}")).is_err(), "generation {i} survived the purge");
+            assert!(
+                fs::metadata(format!("{path}.{i}")).is_err(),
+                "generation {i} survived the purge"
+            );
         }
         assert!(fs::metadata(dir.join("something-else.log")).is_ok());
 
@@ -552,7 +584,10 @@ mod log_retention_tests {
             now_unix()
         ));
         fs::create_dir_all(&dir).expect("temp dir");
-        let path = dir.join("loop-studio-router.log").to_string_lossy().into_owned();
+        let path = dir
+            .join("loop-studio-router.log")
+            .to_string_lossy()
+            .into_owned();
         fs::write(format!("{path}.1"), vec![b'x'; 10]).expect("write");
         fs::write(format!("{path}.3"), vec![b'x'; 10]).expect("write");
         assert_eq!(purge_rotated_generations(&path), (10, 0));
@@ -570,7 +605,10 @@ mod log_retention_tests {
             now_unix()
         ));
         fs::create_dir_all(&dir).expect("temp dir");
-        let path = dir.join("loop-studio-router.log").to_string_lossy().into_owned();
+        let path = dir
+            .join("loop-studio-router.log")
+            .to_string_lossy()
+            .into_owned();
         fs::write(format!("{path}.1"), vec![b'x'; 4096]).expect("write generation");
         let mode = fs::metadata(&dir).expect("dir meta").permissions().mode();
         let root = running_as_root();
@@ -584,8 +622,14 @@ mod log_retention_tests {
         fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).expect("restore");
 
         assert_eq!(failed, 1, "a denied unlink must be reported as a failure");
-        assert_eq!(reclaimed, 0, "bytes that were not removed must not be reported as reclaimed");
-        assert!(fs::metadata(format!("{path}.1")).is_ok(), "the file is still there");
+        assert_eq!(
+            reclaimed, 0,
+            "bytes that were not removed must not be reported as reclaimed"
+        );
+        assert!(
+            fs::metadata(format!("{path}.1")).is_ok(),
+            "the file is still there"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -610,14 +654,18 @@ mod log_retention_tests {
         fs::create_dir_all(&logs).expect("transcript dir");
 
         let count = TASK_LOG_KEEP + 10;
-        let base = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let base =
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
         for i in 0..count {
             let path = std::path::Path::new(&logs).join(format!("task-{i:03}.log"));
             fs::write(&path, vec![b'x'; 16]).expect("write");
             let when = base + std::time::Duration::from_secs(i as u64 * 60);
-            let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(
-                when.duration_since(std::time::UNIX_EPOCH).expect("epoch").as_secs(),
-            );
+            let stamp = std::time::UNIX_EPOCH
+                + std::time::Duration::from_secs(
+                    when.duration_since(std::time::UNIX_EPOCH)
+                        .expect("epoch")
+                        .as_secs(),
+                );
             set_mtime(&path, stamp);
         }
 
@@ -630,7 +678,10 @@ mod log_retention_tests {
         assert_eq!(reclaimed, 10 * 16);
 
         let (_, after) = task_logs_footprint_in(&logs);
-        assert_eq!(after, TASK_LOG_KEEP, "the tree is bounded afterwards: {after}");
+        assert_eq!(
+            after, TASK_LOG_KEEP,
+            "the tree is bounded afterwards: {after}"
+        );
 
         assert!(
             fs::metadata(std::path::Path::new(&logs).join("task-000.log")).is_err(),
@@ -667,12 +718,18 @@ mod log_retention_tests {
         let ceiling = TASK_LOG_MAX_BYTES;
         fs::write(&path, vec![b'x'; 1]).expect("rewrite");
         {
-            let f = fs::OpenOptions::new().write(true).open(&path).expect("open");
+            let f = fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .expect("open");
             f.set_len(ceiling + 1).expect("grow");
         }
         trim_task_logs_in(&logs);
         let len = fs::metadata(&path).expect("still there").len();
-        assert_eq!(len, ceiling, "an oversized transcript is capped, not deleted");
+        assert_eq!(
+            len, ceiling,
+            "an oversized transcript is capped, not deleted"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -683,10 +740,18 @@ mod log_retention_tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("epoch")
             .as_secs() as isize;
-        let times = [Timespec { sec: secs, nsec: 0isize }; 2];
+        let times = [Timespec {
+            sec: secs,
+            nsec: 0isize,
+        }; 2];
         let c = std::ffi::CString::new(path.to_string_lossy().as_bytes()).expect("path cstring");
         unsafe extern "C" {
-            fn utimensat(dirfd: i32, path: *const std::ffi::c_char, times: *const Timespec, flags: i32) -> i32;
+            fn utimensat(
+                dirfd: i32,
+                path: *const std::ffi::c_char,
+                times: *const Timespec,
+                flags: i32,
+            ) -> i32;
         }
         const AT_FDCWD: i32 = -2;
         let r = unsafe { utimensat(AT_FDCWD, c.as_ptr(), times.as_ptr(), 0) };
@@ -704,7 +769,10 @@ mod log_retention_tests {
     #[test]
     fn the_footprint_counts_our_logs_and_nothing_else() {
         let (bytes, files) = lac_logs_footprint();
-        assert!(files <= 64, "counting something that is not a log file: {files} files, {bytes} bytes");
+        assert!(
+            files <= 64,
+            "counting something that is not a log file: {files} files, {bytes} bytes"
+        );
         let dir = logs_dir();
         if let Ok(entries) = fs::read_dir(&dir) {
             for entry in entries.flatten() {

@@ -238,7 +238,10 @@ mod thermal_probe_tests {
         assert_eq!(cpu_speed_limit("CPU_Speed_Limit = 71\n"), Some(71.0));
         assert_eq!(cpu_speed_limit("x CPU_Speed_Limit = 71.5 y"), Some(71.5));
         // Absent, or not a limit at all.
-        assert_eq!(cpu_speed_limit("No thermal warning level has been recorded"), None);
+        assert_eq!(
+            cpu_speed_limit("No thermal warning level has been recorded"),
+            None
+        );
         assert_eq!(cpu_speed_limit("CPU_Speed_Limit = "), None);
         assert_eq!(cpu_speed_limit("CPU_Speed_Limit = fast"), None);
         // A negative or infinite "limit" is not a measurement; it must not

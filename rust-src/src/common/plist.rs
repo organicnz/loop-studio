@@ -96,14 +96,34 @@ mod tests {
     <key>StandardErrorPath</key>
     <string>/Users/organic/Library/Logs/loop-studio-serve-mlx.err</string>
 </dict>"#;
-        let out = retarget_launchd_plist(tpl, "/Users/alice", "/ws/loop-studio", "/Users/alice/.local/bin/loop-studio-serve-mlx");
-        assert!(out.contains("/Users/alice/.local/bin/loop-studio-serve-mlx"), "binary retargeted");
-        assert!(out.contains("<string>/ws/loop-studio</string>"), "workdir pinned");
-        assert!(out.contains("/Users/alice/Library/Logs/loop-studio-serve-mlx.log"), "stdout re-rooted");
-        assert!(out.contains("/Users/alice/Library/Logs/loop-studio-serve-mlx.err"), "stderr re-rooted");
+        let out = retarget_launchd_plist(
+            tpl,
+            "/Users/alice",
+            "/ws/loop-studio",
+            "/Users/alice/.local/bin/loop-studio-serve-mlx",
+        );
+        assert!(
+            out.contains("/Users/alice/.local/bin/loop-studio-serve-mlx"),
+            "binary retargeted"
+        );
+        assert!(
+            out.contains("<string>/ws/loop-studio</string>"),
+            "workdir pinned"
+        );
+        assert!(
+            out.contains("/Users/alice/Library/Logs/loop-studio-serve-mlx.log"),
+            "stdout re-rooted"
+        );
+        assert!(
+            out.contains("/Users/alice/Library/Logs/loop-studio-serve-mlx.err"),
+            "stderr re-rooted"
+        );
         assert!(!out.contains("/Users/organic"), "no prior-home leakage");
         // Second model arg untouched (only ProgramArguments[0] replaced).
-        assert!(out.contains("mlx-community/Qwen3.8-27B-4bit"), "model arg preserved");
+        assert!(
+            out.contains("mlx-community/Qwen3.8-27B-4bit"),
+            "model arg preserved"
+        );
     }
 
     #[test]
@@ -117,15 +137,19 @@ mod tests {
         assert!(out.contains("<string>9000</string>"), "{out}");
         assert!(!out.contains("8000"), "{out}");
         // The literal-whitespace replace this replaced, for the record.
-        assert!(router.replace(
-            "<key>LOOP_STUDIO_ROUTER_PORT</key>\n    <string>8000</string>",
-            "<key>LOOP_STUDIO_ROUTER_PORT</key>\n    <string>9000</string>"
-        ) == router, "the old needle never matched the shipped template");
+        assert!(
+            router.replace(
+                "<key>LOOP_STUDIO_ROUTER_PORT</key>\n    <string>8000</string>",
+                "<key>LOOP_STUDIO_ROUTER_PORT</key>\n    <string>9000</string>"
+            ) == router,
+            "the old needle never matched the shipped template"
+        );
         // A key that is not there is reported, not silently ignored.
         assert!(set_plist_string(router, "LOOP_STUDIO_MISSING_KEY", "1").is_none());
         // A key with no string value is reported too, rather than rewriting
         // whatever `<string>` happens to come later in the file.
-        let no_value = "<key>KeepAlive</key>\n    <true/>\n    <key>Other</key>\n    <string>keep</string>";
+        let no_value =
+            "<key>KeepAlive</key>\n    <true/>\n    <key>Other</key>\n    <string>keep</string>";
         assert!(set_plist_string(no_value, "KeepAlive", "false").is_none());
     }
 }

@@ -98,7 +98,10 @@ pub fn choose_program_binary(installed: &str, release: &str) -> ProgramChoice {
             let why = if m.is_dir() {
                 "is a directory".to_string()
             } else {
-                format!("is not executable (mode {:o})", m.permissions().mode() & 0o7777)
+                format!(
+                    "is not executable (mode {:o})",
+                    m.permissions().mode() & 0o7777
+                )
             };
             ProgramChoice {
                 kind: ProgramKind::InstalledUnusable,
@@ -316,8 +319,8 @@ pub fn kill_tree(pid: u32) {
 #[cfg(test)]
 mod tests {
     #![deny(dead_code)]
-    use super::*;
     use super::super::now_unix;
+    use super::*;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -331,7 +334,14 @@ mod tests {
     #[test]
     fn ps_line_parsing() {
         let p = parse_ps_line("  123   456 /usr/bin/foo --bar baz").unwrap();
-        assert_eq!(p, ProcInfo { pid: 123, ppid: 456, cmd: "/usr/bin/foo --bar baz".to_string() });
+        assert_eq!(
+            p,
+            ProcInfo {
+                pid: 123,
+                ppid: 456,
+                cmd: "/usr/bin/foo --bar baz".to_string()
+            }
+        );
         assert!(parse_ps_line("not a row").is_none());
         assert!(parse_ps_line("12").is_none());
         assert!(parse_ps_line("  7   1 ").is_none()); // kernel thread, no command
@@ -363,7 +373,10 @@ mod tests {
                     break;
                 }
                 Ok(None) => {
-                    assert!(start.elapsed() < Duration::from_secs(10), "child survived kill_tree");
+                    assert!(
+                        start.elapsed() < Duration::from_secs(10),
+                        "child survived kill_tree"
+                    );
                     std::thread::sleep(Duration::from_millis(50));
                 }
                 Err(e) => panic!("try_wait: {}", e),
@@ -374,14 +387,38 @@ mod tests {
     #[test]
     fn a_signal_only_ever_reaches_the_program_it_names() {
         let bystanders = [
-            ("/usr/bin/tail -f /Users/x/Library/Logs/lac-serve-mlx.err", "serve-mlx"),
-            ("/usr/bin/less /Users/x/Library/Logs/lac-serve-llama.log", "serve-llama"),
-            ("/usr/bin/grep -r loop-studio-router /Users/x/dev", "loop-studio-router"),
-            ("/usr/bin/git diff -- rust-src/target/release/serve-mlx", "serve-mlx"),
-            ("/bin/zsh -c sleep 300; : loop-studio-router", "loop-studio-router"),
-            ("/Applications/Codex.app/Contents/MacOS/Codex run restart serve-mlx", "serve-mlx"),
-            ("/usr/bin/vim notes # loop-studio-router", "loop-studio-router"),
-            ("/usr/bin/open -a TextEdit ~/notes/loop-studio-router.md", "loop-studio-router"),
+            (
+                "/usr/bin/tail -f /Users/x/Library/Logs/lac-serve-mlx.err",
+                "serve-mlx",
+            ),
+            (
+                "/usr/bin/less /Users/x/Library/Logs/lac-serve-llama.log",
+                "serve-llama",
+            ),
+            (
+                "/usr/bin/grep -r loop-studio-router /Users/x/dev",
+                "loop-studio-router",
+            ),
+            (
+                "/usr/bin/git diff -- rust-src/target/release/serve-mlx",
+                "serve-mlx",
+            ),
+            (
+                "/bin/zsh -c sleep 300; : loop-studio-router",
+                "loop-studio-router",
+            ),
+            (
+                "/Applications/Codex.app/Contents/MacOS/Codex run restart serve-mlx",
+                "serve-mlx",
+            ),
+            (
+                "/usr/bin/vim notes # loop-studio-router",
+                "loop-studio-router",
+            ),
+            (
+                "/usr/bin/open -a TextEdit ~/notes/loop-studio-router.md",
+                "loop-studio-router",
+            ),
         ];
         for (cmd, pattern) in bystanders {
             assert!(
@@ -394,18 +431,50 @@ mod tests {
     #[test]
     fn the_programs_we_mean_are_still_matched() {
         let owned = [
-            ("/Users/x/.local/bin/loop-studio-router", "loop-studio-router", true),
-            ("./target/release/loop-studio-router", "loop-studio-router", true),
+            (
+                "/Users/x/.local/bin/loop-studio-router",
+                "loop-studio-router",
+                true,
+            ),
+            (
+                "./target/release/loop-studio-router",
+                "loop-studio-router",
+                true,
+            ),
             ("/Users/x/.local/bin/lac-serve-mlx", "serve-mlx", true),
-            ("/Users/x/.local/bin/loop-studio-serve-mlx", "serve-mlx", true),
-            ("/Users/x/.local/bin/loop-studio-serve-llama", "serve-llama", true),
+            (
+                "/Users/x/.local/bin/loop-studio-serve-mlx",
+                "serve-mlx",
+                true,
+            ),
+            (
+                "/Users/x/.local/bin/loop-studio-serve-llama",
+                "serve-llama",
+                true,
+            ),
             ("/Users/x/.local/bin/serve-llama", "serve-llama", true),
-            ("/opt/homebrew/bin/llama-server --port 8081 -m q8.gguf", "llama-server", true),
-            ("/Users/x/.venv/bin/mlx_lm.server --model m", "mlx_lm.server", true),
-            ("/usr/bin/python3 -m mlx_lm.server --model m", "mlx_lm.server", true),
+            (
+                "/opt/homebrew/bin/llama-server --port 8081 -m q8.gguf",
+                "llama-server",
+                true,
+            ),
+            (
+                "/Users/x/.venv/bin/mlx_lm.server --model m",
+                "mlx_lm.server",
+                true,
+            ),
+            (
+                "/usr/bin/python3 -m mlx_lm.server --model m",
+                "mlx_lm.server",
+                true,
+            ),
             ("/usr/local/bin/ollama serve", "ollama serve", true),
             ("/usr/local/bin/ollama runner x", "ollama serve", false),
-            ("/Users/x/.local/bin/loop-studio-router (deleted)", "loop-studio-router", true),
+            (
+                "/Users/x/.local/bin/loop-studio-router (deleted)",
+                "loop-studio-router",
+                true,
+            ),
         ];
         for (cmd, pattern, expected) in owned {
             assert_eq!(
@@ -418,7 +487,12 @@ mod tests {
 
     #[test]
     fn every_matched_process_is_actually_that_program() {
-        for pattern in ["loop-studio-router", "serve-mlx", "llama-server", "mlx_lm.server"] {
+        for pattern in [
+            "loop-studio-router",
+            "serve-mlx",
+            "llama-server",
+            "mlx_lm.server",
+        ] {
             for p in processes_matching(pattern) {
                 assert!(
                     program_matches(&p.cmd, pattern),
@@ -441,15 +515,26 @@ mod tests {
         ]
         .iter()
         .enumerate()
-        .map(|(index, cmd)| ProcInfo { pid: 1000 + index as u32, ppid: 1, cmd: cmd.to_string() })
+        .map(|(index, cmd)| ProcInfo {
+            pid: 1000 + index as u32,
+            ppid: 1,
+            cmd: cmd.to_string(),
+        })
         .collect();
         let hits: Vec<String> = processes_matching_in(&snapshot, "loop-studio-router")
             .iter()
             .map(|p| p.cmd.clone())
             .collect();
-        assert_eq!(hits, vec!["/Users/x/.local/bin/loop-studio-router".to_string()]);
+        assert_eq!(
+            hits,
+            vec!["/Users/x/.local/bin/loop-studio-router".to_string()]
+        );
         let me = std::process::id();
-        let mine = vec![ProcInfo { pid: me, ppid: 1, cmd: "loop-studio-router".to_string() }];
+        let mine = vec![ProcInfo {
+            pid: me,
+            ppid: 1,
+            cmd: "loop-studio-router".to_string(),
+        }];
         assert!(processes_matching_in(&mine, "loop-studio-router").is_empty());
     }
 
@@ -459,7 +544,9 @@ mod tests {
         let command = command_of(me).expect("own pid is visible to ps");
         assert!(!command.is_empty());
         assert!(
-            command.contains("lac_bootstrap") || command.contains("common") || command.contains("-"),
+            command.contains("lac_bootstrap")
+                || command.contains("common")
+                || command.contains("-"),
             "unexpected own command line: {command}"
         );
         assert!(command_of(u32::MAX).is_none());
@@ -487,9 +574,18 @@ mod tests {
 
         let picked = choose_program_binary(&installed.to_string_lossy(), release);
         assert_eq!(picked.kind, ProgramKind::Missing);
-        assert!(picked.path.is_empty(), "no program may be invented: {:?}", picked.path);
-        let warning = picked.warning.expect("the operator is told why nothing was placed");
-        assert!(warning.contains("no runnable Loop Studio binary"), "{warning}");
+        assert!(
+            picked.path.is_empty(),
+            "no program may be invented: {:?}",
+            picked.path
+        );
+        let warning = picked
+            .warning
+            .expect("the operator is told why nothing was placed");
+        assert!(
+            warning.contains("no runnable Loop Studio binary"),
+            "{warning}"
+        );
         assert!(warning.contains(release), "{warning}");
 
         fs::write(&installed, b"").expect("truncated binary");

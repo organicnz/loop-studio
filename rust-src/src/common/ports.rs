@@ -143,10 +143,14 @@ mod tests {
         // process-global vars is a flake, not a test, so every one of them takes
         // one lock (`crate::common::PORT_ENV_TEST_LOCK`) and runs one at a time.
         let _env_lock = crate::common::PORT_ENV_TEST_LOCK.lock().unwrap();
-        let saved: Vec<_> = ["LOOP_STUDIO_ROUTER_PORT", "LOOP_STUDIO_LLAMA_PORT", "LOOP_STUDIO_OLLAMA_PORT"]
-            .iter()
-            .map(|v| (*v, env::var(v).ok()))
-            .collect();
+        let saved: Vec<_> = [
+            "LOOP_STUDIO_ROUTER_PORT",
+            "LOOP_STUDIO_LLAMA_PORT",
+            "LOOP_STUDIO_OLLAMA_PORT",
+        ]
+        .iter()
+        .map(|v| (*v, env::var(v).ok()))
+        .collect();
         for (var, _) in &saved {
             unsafe { env::set_var(var, "0") };
         }

@@ -5,10 +5,7 @@ use std::process::Command;
 /// OS page size via `sysctl hw.pagesize`; Apple Silicon fallback 16384.
 /// Never hardcode: Rosetta/Intel pages are 4096 and silently skew RAM math.
 pub fn page_size() -> u64 {
-    if let Ok(out) = Command::new("sysctl")
-        .args(["-n", "hw.pagesize"])
-        .output()
-    {
+    if let Ok(out) = Command::new("sysctl").args(["-n", "hw.pagesize"]).output() {
         if let Ok(n) = String::from_utf8_lossy(&out.stdout).trim().parse::<u64>() {
             if n > 0 {
                 return n;
@@ -97,6 +94,11 @@ mod tests {
     #[test]
     fn serve_tiers_ordered() {
         let (high, medium) = serve_ram_tiers_gib();
-        assert!(high > medium && medium > 0.0, "high={} medium={}", high, medium);
+        assert!(
+            high > medium && medium > 0.0,
+            "high={} medium={}",
+            high,
+            medium
+        );
     }
 }
