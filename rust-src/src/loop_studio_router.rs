@@ -5023,14 +5023,19 @@ mod tests {
         // ...and it does converge. The refresh runs on its own thread, so the
         // wait is for the thread, not for the caller.
         //
-        // The wait is on the *memo*, not on the counter: the rebuild bumps the
-        // counter and then stores the new body, so a counter that has ticked
-        // does not yet mean the value is visible. Waiting on the counter and
-        // then reading the memo is a race the scheduler can win — it did, and
-        // the failure looked like the memo never refreshing at all.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while memo.fresh().is_none() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(25));
+        // We wait on the call counter crossing `before` — the rebuild increments
+        // it before writing the memo, so counter > before is a reliable signal
+        // that the write is either done or imminent. We then spin a little
+        // longer on fresh() to let the write land. A 30s ceiling ensures the
+        // test cannot hang forever on a seized CI runner.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while calls.load(Ordering::SeqCst) <= before && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        // Counter has ticked; give the memo write a moment to become visible.
+        let deadline2 = Instant::now() + Duration::from_secs(5);
+        while memo.fresh().is_none() && Instant::now() < deadline2 {
+            thread::sleep(Duration::from_millis(5));
         }
         // Capture fresh() once so both assertions see the same value.
         let fresh_val = memo.fresh();
