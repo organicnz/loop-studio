@@ -231,13 +231,13 @@ fn cmd_check(args: &[String]) {
         println!(
             "{{\"tokens\":{},\"tokens_source\":\"{}\",\"tokens_measured\":{},\"kv_est_gib\":{:.2},\"kv_kind\":\"{}\",\"free_ram_gib\":{},\"threshold\":{},\"risk\":\"{}\",\"action\":\"{}\"}}",
             tokens,
-            source,
+            common::json_escape(source),
             measured.is_some(),
             kv,
-            kv_label,
+            common::json_escape(kv_label),
             free.map(|f| format!("{:.1}", f)).unwrap_or_else(|| "null".to_string()),
             threshold,
-            level,
+            common::json_escape(level),
             common::json_escape(action),
         );
     } else {
@@ -323,7 +323,7 @@ impl TruncationPlan {
             "{{\"tokens_before\":{},\"tokens_measured\":{},\"tokens_source\":\"{}\",\"keep_last\":{},\"preserve\":[\"system\",\"tools\"],\"noop\":{},\"ts\":{}}}",
             tokens,
             self.measured,
-            self.tokens_source,
+            common::json_escape(self.tokens_source),
             self.keep,
             self.noop,
             ts

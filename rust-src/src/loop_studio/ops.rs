@@ -521,8 +521,8 @@ pub fn cmd_doctor(root: &str, args: &[String]) -> i32 {
             }
             s.push_str(&format!(
                 "{{\"name\":\"{}\",\"level\":\"{}\",\"detail\":\"{}\"}}",
-                c.name,
-                c.level,
+                common::json_escape(c.name),
+                common::json_escape(c.level),
                 common::json_escape(&c.detail)
             ));
         }

@@ -871,14 +871,14 @@ fn log_usage(
         common::now_unix(),
         rid,
         attempt,
-        backend,
+        common::json_escape(backend),
         port,
         common::json_escape(model),
         up_body,
         down_body,
         est_tokens,
         ttfb_ms.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "null".to_string()),
-        outcome,
+        common::json_escape(outcome),
     );
     common::append_jsonl(&path, &line);
 }

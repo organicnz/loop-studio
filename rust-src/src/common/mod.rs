@@ -503,6 +503,26 @@ mod tests {
     }
 
     #[test]
+    fn json_escape_neutralizes_known_bad_chars() {
+        // Every JSON-breaking character must be escaped so a value can never
+        // close its string field early or break the enclosing object.
+        assert_eq!(json_escape("\t"), "\\t", "tab");
+        assert_eq!(json_escape("\n"), "\\n", "newline");
+        assert_eq!(json_escape("\r"), "\\r", "carriage return");
+        assert_eq!(json_escape("\\"), "\\\\", "backslash");
+        assert_eq!(json_escape("\""), "\\\"", "double-quote");
+        // Control characters below 0x20 become \uXXXX escapes.
+        assert_eq!(json_escape("\u{0}"), "\\u0000", "NUL");
+        assert_eq!(json_escape("\u{7}"), "\\u0007", "BEL");
+        assert_eq!(json_escape("\u{1f}"), "\\u001f", "unit separator");
+        // A value carrying every bad char at once round-trips to escaped JSON.
+        assert_eq!(
+            json_escape("a\tb\nc\rd\\e\"f\u{0}g\u{1f}"),
+            "a\\tb\\nc\\rd\\\\e\\\"f\\u0000g\\u001f"
+        );
+    }
+
+    #[test]
     fn volume_mounted_rejects_fantasy_paths() {
         assert!(!volume_mounted("/Volumes/Definitely-Not-A-Volume-xyz"));
     }
