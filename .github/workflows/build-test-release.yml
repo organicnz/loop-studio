@@ -90,10 +90,10 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.8.${{ github.run_number }}
+          tag_name: v2.9.${{ github.run_number }}
           files: ./artifacts/*
           fail_on_unmatched_files: true
-          name: Loop Studio v2.8 Release
+          name: Loop Studio v2.9 Release
           body: |
             ## What's Changed
 

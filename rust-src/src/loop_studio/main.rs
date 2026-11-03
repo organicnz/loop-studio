@@ -19,7 +19,7 @@ use std::env;
 use std::process::Command;
 use std::process::Stdio;
 
-pub const VERSION: &str = "2.8.0";
+pub const VERSION: &str = "2.9.0";
 pub const MAX_TASK_ATTEMPTS: u32 = 3;
 
 // ------------------------------------------------------------------ help ---
