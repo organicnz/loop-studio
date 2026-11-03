@@ -53,3 +53,25 @@ loop-studio code "Write a lock-free multi-producer single-consumer ring buffer i
   ```bash
   export LOOP_STUDIO_CODE_MODEL="mlx-community/Qwen2.5-Coder-32B-Instruct-4bit"
   ```
+
+## Project-specific conventions (Loop Studio)
+
+The Code Assistant is pre-grounded in these rules when working on this repo:
+
+### Backend (Rust)
+- **Zero external crates.** `std` only. Never add a `Cargo.toml` dependency. No serde, tokio, anyhow, clap, reqwest, etc.
+- **Every network path is a plain `TcpStream`** with `common::ignore_sigpipe()` at process start and `std::panic::catch_unwind` on every spawned thread. No async runtime.
+- **State directory**: `~/.loop-studio` (via `common::state_dir()`). Never write `~/.lac` — that name is retired.
+- **No bare `unwrap()`/`expect()` in non-test daemon paths.** Use `unwrap_or_default()`, `match`, or `if let`.
+- **JSON string values** in `format!()` must use `common::json_escape()`. Timestamps via `common::now_unix()`.
+- **Port resolution** goes through `common::gateway_port()`, `common::mlx_port()`, etc. — never hardcoded integers.
+
+### Swift (macOS app)
+- **Swift 6 language mode.** All types that cross actor boundaries must be `Sendable`. No blocking calls on `@MainActor`.
+- **One gateway client.** `GatewayClient` owns all URL construction, auth, SSE decoding. Chat/Code/Loops import `GatewayEvent` and `GatewayReply`.
+- **Lock parity**: queue lock path and log names are shared with Rust — see `docs/lock-parity.tsv`. If one side changes, both change.
+
+### Delivery gate
+```bash
+make validate   # lint + test + smoke + Swift test + app-check — must be green before commit
+```
