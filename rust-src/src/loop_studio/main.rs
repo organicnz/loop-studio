@@ -25,16 +25,26 @@ pub const MAX_TASK_ATTEMPTS: u32 = 3;
 // ------------------------------------------------------------------ help ---
 
 fn print_help() {
-    println!("Loop Studio — Local Agentic Coding Command Suite v{}", VERSION);
+    println!(
+        "Loop Studio — Local Agentic Coding Command Suite v{}",
+        VERSION
+    );
     println!("Usage: loop-studio [command] [arguments]");
-    println!("  * Default mode: 'loop-studio' with no arguments runs the 24/7 autonomous worker.\n");
+    println!(
+        "  * Default mode: 'loop-studio' with no arguments runs the 24/7 autonomous worker.\n"
+    );
     println!("Commands:");
     println!("  (default)           Run continuous 24/7 autonomous worker loop");
-    println!("  worker [--drain]    Run autonomous worker loop (or batch drain and exit)");
+    println!(
+        "  worker [--drain] [--parallel N]  Run autonomous worker loop (or batch drain and exit)"
+    );
     println!("  daemon [install|uninstall|status] Manage macOS launchd background 24/7 services");
     println!("  status [--json]     Real-time stack health, ports, RAM, and thermals");
     println!("  serve [mlx|llama|ollama|auto] Start inference engine");
-    println!("  route [--daemon]    Launch unified intelligent router on :{}", common::gateway_port());
+    println!(
+        "  route [--daemon]    Launch unified intelligent router on :{}",
+        common::gateway_port()
+    );
     println!("  stop                Stop router + inference servers started by loop-studio");
     println!("  ps                  List loop-studio-related processes and port table");
     println!("  logs [router|worker|mlx|llama] Tail daemon log files");
@@ -46,10 +56,14 @@ fn print_help() {
     println!("  thermal             Inspect thermals, power state, and throttling risk");
     println!("  cap [--set N]       Check or enforce session context window cap (16K hygiene)");
     println!("  hermes [run|status] Native Hermes orchestrator (judgment-augmented worker)");
+    println!("                      run accepts worker flags: --drain, --once, --parallel N");
     println!("  kv [check|truncate] Context hygiene and memory leak prevention");
     println!("  loop [init|list|validate|run] Autonomous Kanban loop management");
     println!("  visualize           Launch SwiftUI dashboard visualizer");
-    println!("  chat \"prompt...\"      Single-shot chat through the :{} gateway", common::gateway_port());
+    println!(
+        "  chat \"prompt...\"      Single-shot chat through the :{} gateway",
+        common::gateway_port()
+    );
     println!("  code [-f file] \"...\"  Agentic Code Assistant (refactoring, tests, audits)");
     println!("  pull [model]        Pull model weights (MLX from Hugging Face or Ollama)");
     println!("  dashboard [--install] Launch dashboard, or install it to ~/.local/bin");
@@ -66,7 +80,10 @@ fn main() {
 
     if args.is_empty() {
         println!("================================================================");
-        println!("  Loop Studio: Default Mode -> 24/7 Autonomous Worker Daemon (v{})", VERSION);
+        println!(
+            "  Loop Studio: Default Mode -> 24/7 Autonomous Worker Daemon (v{})",
+            VERSION
+        );
         println!("  (Run 'loop-studio help' or 'loop-studio status' for other subcommands)");
         println!("================================================================\n");
         worker::cmd_worker(&root, &[]);
@@ -97,7 +114,10 @@ fn main() {
             match mode {
                 "mlx" => {
                     if !common::mlx_supported() {
-                        eprintln!("MLX requires Apple Silicon (arm64 macOS); this host is {}.", common::arch_label());
+                        eprintln!(
+                            "MLX requires Apple Silicon (arm64 macOS); this host is {}.",
+                            common::arch_label()
+                        );
                         eprintln!("Use the llama-server lane instead: `loop-studio serve llama`.");
                         std::process::exit(1);
                     }
@@ -155,7 +175,10 @@ fn main() {
                 }
             } else {
                 match Command::new(common::bin(&root, "loop-studio-router"))
-                    .env("LOOP_STUDIO_ROUTER_PORT", common::gateway_port().to_string())
+                    .env(
+                        "LOOP_STUDIO_ROUTER_PORT",
+                        common::gateway_port().to_string(),
+                    )
                     .status()
                 {
                     Ok(status) => std::process::exit(status.code().unwrap_or(1)),
@@ -207,10 +230,18 @@ mod tests {
 
         let loud = ops::doctor_logs_check(cap * 9, 12, 0, 0);
         assert_eq!(loud.level, "warn", "{}", loud.detail);
-        assert!(loud.detail.contains("--purge"), "a warning must say what to do: {}", loud.detail);
+        assert!(
+            loud.detail.contains("--purge"),
+            "a warning must say what to do: {}",
+            loud.detail
+        );
 
         for bytes in [0, cap, cap * 9, cap * 1000] {
-            assert_ne!(ops::doctor_logs_check(bytes, 3, 0, 0).level, "fail", "{bytes} bytes");
+            assert_ne!(
+                ops::doctor_logs_check(bytes, 3, 0, 0).level,
+                "fail",
+                "{bytes} bytes"
+            );
             assert_ne!(
                 ops::doctor_logs_check(0, 0, bytes, 3).level,
                 "fail",
@@ -252,7 +283,11 @@ mod tests {
         assert!(common::task_logs_dir().ends_with("task-logs"));
 
         for bytes in [0, cap, cap * 1000] {
-            assert_ne!(ops::doctor_logs_check(0, 0, bytes, 3).level, "fail", "{bytes}");
+            assert_ne!(
+                ops::doctor_logs_check(0, 0, bytes, 3).level,
+                "fail",
+                "{bytes}"
+            );
         }
     }
 
@@ -272,9 +307,15 @@ mod tests {
     #[test]
     fn task_id_sanitize_allows_sane_ids() {
         assert_eq!(queue::sanitize_task_id("a-1").as_deref(), Some("a-1"));
-        assert_eq!(queue::sanitize_task_id("loop-studio-004").as_deref(), Some("loop-studio-004"));
+        assert_eq!(
+            queue::sanitize_task_id("loop-studio-004").as_deref(),
+            Some("loop-studio-004")
+        );
         assert_eq!(queue::sanitize_task_id("A").as_deref(), Some("A"));
-        assert_eq!(queue::sanitize_task_id("x.y_z-9").as_deref(), Some("x.y_z-9"));
+        assert_eq!(
+            queue::sanitize_task_id("x.y_z-9").as_deref(),
+            Some("x.y_z-9")
+        );
         assert!(queue::sanitize_task_id(&"q".repeat(65)).is_some());
     }
 
@@ -297,9 +338,16 @@ mod tests {
             "ctrl\x01",
             "star*",
         ] {
-            assert!(queue::sanitize_task_id(bad).is_none(), "must reject {:?}", bad);
+            assert!(
+                queue::sanitize_task_id(bad).is_none(),
+                "must reject {:?}",
+                bad
+            );
         }
-        assert!(queue::sanitize_task_id(&"q".repeat(66)).is_none(), "must reject 66 chars");
+        assert!(
+            queue::sanitize_task_id(&"q".repeat(66)).is_none(),
+            "must reject 66 chars"
+        );
     }
 
     #[test]
@@ -318,11 +366,15 @@ mod tests {
             Some("Hello \"world\"\nline2")
         );
         assert_eq!(
-            chat::extract_json_string(r#"{"error":{"message":"no backend"}}"#, "message").as_deref(),
+            chat::extract_json_string(r#"{"error":{"message":"no backend"}}"#, "message")
+                .as_deref(),
             Some("no backend")
         );
         assert_eq!(chat::extract_json_string(r#"{"a":1}"#, "content"), None);
-        assert_eq!(chat::extract_json_string(r#"{"content":"unterminated"#, "content"), None);
+        assert_eq!(
+            chat::extract_json_string(r#"{"content":"unterminated"#, "content"),
+            None
+        );
     }
 
     #[test]
@@ -339,7 +391,10 @@ mod tests {
             }
         });
         let t0 = Instant::now();
-        assert!(common::http_post_addr(&addr, "/v1/chat/completions", "{}", Duration::from_secs(2)).is_none());
+        assert!(
+            common::http_post_addr(&addr, "/v1/chat/completions", "{}", Duration::from_secs(2))
+                .is_none()
+        );
         assert!(t0.elapsed() < Duration::from_secs(20));
     }
 
@@ -347,7 +402,9 @@ mod tests {
     fn update_targets_only_matching_block() {
         let out = queue::update_task(SAMPLE, "b-2", "complete", false);
         assert!(out.contains("- id: \"a-1\"\n  task: \"do first\"\n  status: pending"));
-        assert!(out.contains("- id: \"b-2\"\n  task: \"do second: with colon\"\n  status: complete"));
+        assert!(
+            out.contains("- id: \"b-2\"\n  task: \"do second: with colon\"\n  status: complete")
+        );
         assert_eq!(out.matches("status: complete").count(), 1);
     }
 
@@ -412,7 +469,11 @@ mod tests {
         assert!(p.contains("Nominal"), "thermal in prompt:\n{}", p);
         assert!(p.contains("a-1"), "candidate a-1 in prompt:\n{}", p);
         assert!(p.contains("b-2"), "candidate b-2 in prompt:\n{}", p);
-        assert!(p.contains("TASK_ID:"), "format instructions in prompt:\n{}", p);
+        assert!(
+            p.contains("TASK_ID:"),
+            "format instructions in prompt:\n{}",
+            p
+        );
     }
 
     #[test]
@@ -423,8 +484,11 @@ mod tests {
         assert_eq!(cands.len(), 3);
         let first = queue::next_pending(URGENT_LAST).expect("pending").id;
         assert_eq!(first, "t-routine");
-        let judged = orchestrator::parse_judge_decision("TASK_ID: t-urgent\nREASON: production auth bypass outranks tidy-up\n", &cands)
-            .expect("valid id parses");
+        let judged = orchestrator::parse_judge_decision(
+            "TASK_ID: t-urgent\nREASON: production auth bypass outranks tidy-up\n",
+            &cands,
+        )
+        .expect("valid id parses");
         assert_eq!(judged.id, "t-urgent");
         assert_ne!(judged.id, first, "judgment differs from file order");
         let picked = orchestrator::judge_select(cands, Some(judged)).expect("pick");
@@ -437,13 +501,32 @@ mod tests {
 - id: \"t-routine\"\n  task: \"routine: tidy comments in docs\"\n  status: pending\n\n- id: \"t-urgent\"\n  task: \"URGENT: production auth bypass\"\n  status: pending\n";
         let cands = queue::pending_candidates(URGENT_LAST);
         let expected = queue::next_pending(URGENT_LAST).expect("pending").id;
-        assert!(orchestrator::parse_judge_decision("ACTION: dispatch_loop\nno task id here\n", &cands).is_none());
+        assert!(
+            orchestrator::parse_judge_decision("ACTION: dispatch_loop\nno task id here\n", &cands)
+                .is_none()
+        );
         let garbage = orchestrator::parse_judge_decision("hello world", &cands);
-        assert_eq!(orchestrator::judge_select(cands.clone(), garbage).expect("pick").id, expected);
-        let unknown = orchestrator::parse_judge_decision("TASK_ID: nope-missing\nREASON: hallucinated\n", &cands);
+        assert_eq!(
+            orchestrator::judge_select(cands.clone(), garbage)
+                .expect("pick")
+                .id,
+            expected
+        );
+        let unknown = orchestrator::parse_judge_decision(
+            "TASK_ID: nope-missing\nREASON: hallucinated\n",
+            &cands,
+        );
         assert!(unknown.is_none());
-        assert_eq!(orchestrator::judge_select(cands.clone(), unknown).expect("pick").id, expected);
-        assert_eq!(orchestrator::judge_select(cands, None).expect("pick").id, expected);
+        assert_eq!(
+            orchestrator::judge_select(cands.clone(), unknown)
+                .expect("pick")
+                .id,
+            expected
+        );
+        assert_eq!(
+            orchestrator::judge_select(cands, None).expect("pick").id,
+            expected
+        );
     }
 
     #[test]
@@ -474,7 +557,11 @@ mod tests {
             "Looks fine, no issues.",
             "VERDICT: fix",
         ] {
-            assert!(review::parse_review_findings(clean).is_empty(), "must approve: {:?}", clean);
+            assert!(
+                review::parse_review_findings(clean).is_empty(),
+                "must approve: {:?}",
+                clean
+            );
         }
     }
 
@@ -492,7 +579,11 @@ mod tests {
         let big = "x".repeat(review::REVIEW_DIFF_LIMIT + 100);
         let p = review::review_prompt("fix login check", &big);
         assert!(p.contains("fix login check"), "task in prompt");
-        assert!(p.contains("truncated"), "truncation disclosed:\n{}", &p[..500]);
+        assert!(
+            p.contains("truncated"),
+            "truncation disclosed:\n{}",
+            &p[..500]
+        );
         assert!(p.len() < big.len() + 2000, "prompt bounded");
         let small = "diff --git a/x b/x";
         let p2 = review::review_prompt("t", small);
@@ -526,7 +617,10 @@ mod tests {
     #[test]
     fn model_parsed_through_comments() {
         let jsonc = "{\n// comment\n\"model\": \"lac/qwen-test\", /* block */\n}";
-        assert_eq!(common::jsonc_model_id(jsonc).as_deref(), Some("lac/qwen-test"));
+        assert_eq!(
+            common::jsonc_model_id(jsonc).as_deref(),
+            Some("lac/qwen-test")
+        );
         assert_eq!(
             common::jsonc_model_id("{\"model\": \"a//b\"}").as_deref(),
             Some("a//b")
@@ -542,7 +636,11 @@ mod tests {
             "{\n  \"model\"",
             "{\n  \"model\"\u{6a21}\u{578b}",
         ] {
-            assert_eq!(common::jsonc_model_id(bad), None, "{bad:?} must not parse or panic");
+            assert_eq!(
+                common::jsonc_model_id(bad),
+                None,
+                "{bad:?} must not parse or panic"
+            );
         }
     }
 
@@ -556,16 +654,37 @@ mod tests {
     #[test]
     fn doctor_memory_check_scales_across_macs() {
         assert_eq!(ops::doctor_memory_check_with(Some(8.0), Some(4.0)).0, "ok");
-        assert_eq!(ops::doctor_memory_check_with(Some(8.0), Some(2.0)).0, "warn");
-        assert_eq!(ops::doctor_memory_check_with(Some(8.0), Some(1.0)).0, "fail");
+        assert_eq!(
+            ops::doctor_memory_check_with(Some(8.0), Some(2.0)).0,
+            "warn"
+        );
+        assert_eq!(
+            ops::doctor_memory_check_with(Some(8.0), Some(1.0)).0,
+            "fail"
+        );
 
         assert_eq!(ops::doctor_memory_check_with(Some(16.0), Some(5.0)).0, "ok");
-        assert_eq!(ops::doctor_memory_check_with(Some(16.0), Some(2.5)).0, "warn");
-        assert_eq!(ops::doctor_memory_check_with(Some(16.0), Some(1.0)).0, "fail");
+        assert_eq!(
+            ops::doctor_memory_check_with(Some(16.0), Some(2.5)).0,
+            "warn"
+        );
+        assert_eq!(
+            ops::doctor_memory_check_with(Some(16.0), Some(1.0)).0,
+            "fail"
+        );
 
-        assert_eq!(ops::doctor_memory_check_with(Some(96.0), Some(20.0)).0, "ok");
-        assert_eq!(ops::doctor_memory_check_with(Some(96.0), Some(8.0)).0, "warn");
-        assert_eq!(ops::doctor_memory_check_with(Some(96.0), Some(2.0)).0, "fail");
+        assert_eq!(
+            ops::doctor_memory_check_with(Some(96.0), Some(20.0)).0,
+            "ok"
+        );
+        assert_eq!(
+            ops::doctor_memory_check_with(Some(96.0), Some(8.0)).0,
+            "warn"
+        );
+        assert_eq!(
+            ops::doctor_memory_check_with(Some(96.0), Some(2.0)).0,
+            "fail"
+        );
 
         assert_eq!(ops::doctor_memory_check_with(Some(16.0), None).0, "warn");
     }
@@ -609,14 +728,19 @@ mod tests {
     fn block_field_simple() {
         let block = "- id: my-task\n  task: do it\n  status: pending\n  attempts: 0";
         assert_eq!(queue::block_field(block, "task:").as_deref(), Some("do it"));
-        assert_eq!(queue::block_field(block, "status:").as_deref(), Some("pending"));
+        assert_eq!(
+            queue::block_field(block, "status:").as_deref(),
+            Some("pending")
+        );
         assert_eq!(queue::block_field(block, "attempts:").as_deref(), Some("0"));
         assert_eq!(queue::block_field(block, "nonexistent:").as_deref(), None);
     }
 
     #[test]
     fn pull_target_detection() {
-        let is_hf = |m: &str| m.contains('/') || m.starts_with("mlx-") || m.contains("MLX") || m.ends_with(".gguf");
+        let is_hf = |m: &str| {
+            m.contains('/') || m.starts_with("mlx-") || m.contains("MLX") || m.ends_with(".gguf")
+        };
         assert!(is_hf("mlx-community/Qwen3.8-27B-4bit"));
         assert!(is_hf("lmstudio-community/Qwen3.8-27B-MLX-4bit"));
         assert!(is_hf("unsloth/Qwen3.6-27B-MTP-GGUF"));
@@ -629,7 +753,12 @@ mod tests {
         let d: Vec<String> = vec![];
         let o = bench::parse_probe_opts(&d);
         assert_eq!((o.tokens, o.temp), (64, 0.0));
-        let a = ["--tokens".to_string(), "128".to_string(), "--temp".to_string(), "0.7".to_string()];
+        let a = [
+            "--tokens".to_string(),
+            "128".to_string(),
+            "--temp".to_string(),
+            "0.7".to_string(),
+        ];
         let o = bench::parse_probe_opts(&a);
         assert_eq!((o.tokens, o.temp), (128, 0.7));
         let b = ["--max-tokens=4099".to_string(), "--temp=9.0".to_string()];
@@ -643,10 +772,17 @@ mod tests {
     #[test]
     fn a_gate_that_did_not_run_does_not_report_a_pass() {
         use std::fs;
-        let empty = std::env::temp_dir().join(format!("loop-studio-test-no-manifest-{}", std::process::id()));
+        let empty = std::env::temp_dir().join(format!(
+            "loop-studio-test-no-manifest-{}",
+            std::process::id()
+        ));
         let _ = fs::create_dir_all(&empty);
         let gate = loop_runner::run_test_gate(&empty.to_string_lossy(), false);
-        assert!(!gate.passed, "a missing suite is not a pass: {}", gate.detail);
+        assert!(
+            !gate.passed,
+            "a missing suite is not a pass: {}",
+            gate.detail
+        );
         assert!(gate.detail.contains("not run"), "{}", gate.detail);
         let dry = loop_runner::run_test_gate(&empty.to_string_lossy(), true);
         assert!(!dry.passed, "--dry-run runs nothing: {}", dry.detail);
@@ -657,20 +793,30 @@ mod tests {
     #[test]
     fn a_copy_onto_its_own_source_is_recognized() {
         use std::fs;
-        let dir = std::env::temp_dir().join(format!("loop-studio-test-same-file-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("loop-studio-test-same-file-{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
         let real = dir.join("LACStudio");
         fs::write(&real, b"binary").unwrap();
         let link = dir.join("LACStudio.link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let absent = dir.join("not-created-yet");
-        assert!(ops::same_file(&real.to_string_lossy(), &real.to_string_lossy()));
+        assert!(ops::same_file(
+            &real.to_string_lossy(),
+            &real.to_string_lossy()
+        ));
         assert!(
             ops::same_file(&real.to_string_lossy(), &link.to_string_lossy()),
             "a symlink to the source is the same file"
         );
-        assert!(!ops::same_file(&real.to_string_lossy(), &absent.to_string_lossy()));
-        assert!(!ops::same_file(&absent.to_string_lossy(), &dir.join("other").to_string_lossy()));
+        assert!(!ops::same_file(
+            &real.to_string_lossy(),
+            &absent.to_string_lossy()
+        ));
+        assert!(!ops::same_file(
+            &absent.to_string_lossy(),
+            &dir.join("other").to_string_lossy()
+        ));
         let _ = fs::remove_dir_all(&dir);
     }
 }
@@ -731,11 +877,22 @@ mod host_facts_tests {
     #[test]
     fn the_value_helpers_read_what_they_name() {
         let block = r#"{"thermal":"Fair","free_ram_gib":12.0,"total_ram_gib":null}"#;
-        assert_eq!(ops::json_string(block, "\"thermal\""), Some("Fair".to_string()));
+        assert_eq!(
+            ops::json_string(block, "\"thermal\""),
+            Some("Fair".to_string())
+        );
         assert_eq!(ops::json_string(block, "\"missing\""), None);
         assert_eq!(ops::json_f64(block, "\"free_ram_gib\""), Some(12.0));
-        assert_eq!(ops::json_f64(block, "\"total_ram_gib\""), None, "null is not a number");
-        assert_eq!(ops::json_f64(block, "\"thermal\""), None, "a string is not a number");
+        assert_eq!(
+            ops::json_f64(block, "\"total_ram_gib\""),
+            None,
+            "null is not a number"
+        );
+        assert_eq!(
+            ops::json_f64(block, "\"thermal\""),
+            None,
+            "a string is not a number"
+        );
     }
 }
 
@@ -753,8 +910,18 @@ mod dispatch_honesty_tests {
             8000,
             "no port argument means the documented default"
         );
-        assert_eq!(bench::bench_port(&s("8080"), 8000), 8080, "a bare port is a port");
-        for flag in ["--tokens", "--max-tokens", "--max_tokens", "--temp", "--temperature"] {
+        assert_eq!(
+            bench::bench_port(&s("8080"), 8000),
+            8080,
+            "a bare port is a port"
+        );
+        for flag in [
+            "--tokens",
+            "--max-tokens",
+            "--max_tokens",
+            "--temp",
+            "--temperature",
+        ] {
             let args = vec![flag.to_string(), "128".to_string()];
             assert_eq!(
                 bench::bench_port(&args, 8000),
@@ -859,7 +1026,10 @@ mod dispatch_honesty_tests {
             Some("Fix the \"task:\" key: colon inside"),
             "a value containing its own key name, a colon and a quote"
         );
-        assert_eq!(queue::block_field(block, "status:").as_deref(), Some("failed"));
+        assert_eq!(
+            queue::block_field(block, "status:").as_deref(),
+            Some("failed")
+        );
         assert_eq!(
             queue::block_field(block, "attempts:").as_deref(),
             Some("3"),
@@ -872,9 +1042,18 @@ mod dispatch_honesty_tests {
   status: pending
   attempts: 0
 ";
-        assert_eq!(queue::block_field(worker_written, "- id:").as_deref(), Some("a-1"));
-        assert_eq!(queue::block_field(worker_written, "task:").as_deref(), Some("do the thing"));
-        assert_eq!(queue::block_field(worker_written, "attempts:").as_deref(), Some("0"));
+        assert_eq!(
+            queue::block_field(worker_written, "- id:").as_deref(),
+            Some("a-1")
+        );
+        assert_eq!(
+            queue::block_field(worker_written, "task:").as_deref(),
+            Some("do the thing")
+        );
+        assert_eq!(
+            queue::block_field(worker_written, "attempts:").as_deref(),
+            Some("0")
+        );
 
         assert_eq!(queue::unquote("  3  "), "3");
         assert_eq!(queue::unquote("\"x\""), "x");
