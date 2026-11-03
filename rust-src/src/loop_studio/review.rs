@@ -118,6 +118,39 @@ pub fn parse_review_findings(output: &str) -> Vec<String> {
     out
 }
 
+/// Minor and suggestion findings never block a task, but they are recorded as
+/// one JSON line each for human review so the information is not lost. This is
+/// in addition to the critical/major findings that drive the fix loop.
+fn log_minor_findings(task_id: &str, output: &str) {
+    let dir = format!("{}/review-findings", common::state_dir());
+    let _ = fs::create_dir_all(&dir);
+    let path = format!("{}/{}.jsonl", dir, task_id);
+    let ts = common::now_unix();
+    for line in output.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let low = t.to_lowercase();
+        if !(low.contains("[minor]") || low.contains("[suggestion]")) {
+            continue;
+        }
+        let severity = if low.contains("[minor]") {
+            "minor"
+        } else {
+            "suggestion"
+        };
+        let record = format!(
+            "{{\"task_id\":\"{}\",\"severity\":\"{}\",\"finding\":\"{}\",\"status\":\"pending\",\"timestamp\":{}}}",
+            common::json_escape(task_id),
+            severity,
+            common::json_escape(t),
+            ts
+        );
+        common::append_jsonl(&path, &record);
+    }
+}
+
 pub fn review_disposition(round: u32, has_findings: bool) -> &'static str {
     if !has_findings {
         "commit"
@@ -134,7 +167,7 @@ pub enum ReviewOutcome {
     Unavailable(String),
 }
 
-pub fn review_diff(root: &str, task_desc: &str, logpath: &str) -> ReviewOutcome {
+pub fn review_diff(root: &str, task_id: &str, task_desc: &str, logpath: &str) -> ReviewOutcome {
     if !review_enabled() {
         return ReviewOutcome::Unavailable("LOOP_STUDIO_REVIEW=off".to_string());
     }
@@ -167,6 +200,7 @@ pub fn review_diff(root: &str, task_desc: &str, logpath: &str) -> ReviewOutcome 
     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(logpath) {
         let _ = writeln!(f, "\n===== reviewer @ {} =====\n{}", common::now_unix(), text);
     }
+    log_minor_findings(task_id, &text);
     let findings = parse_review_findings(&text);
     if findings.is_empty() {
         ReviewOutcome::Approve

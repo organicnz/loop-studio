@@ -241,22 +241,94 @@ fn parse_checkpoint(text: &str) -> Option<WorkerCheckpoint> {
     })
 }
 
-fn write_worker_checkpoint(checkpoint: &WorkerCheckpoint, mirror_legacy: bool) {
+fn write_worker_checkpoint(task_id: &str, branch: &str, phase: &str, worktree_path: &str) {
+    let git_head = git_head_sha(worktree_path);
     let json = format!(
-        "{{\"task_id\":\"{}\",\"branch\":\"{}\",\"phase\":\"{}\",\"timestamp_secs\":{}}}",
-        common::json_escape(&checkpoint.task_id),
-        common::json_escape(&checkpoint.branch),
-        common::json_escape(&checkpoint.phase),
+        "{{\"task_id\":\"{}\",\"branch\":\"{}\",\"phase\":\"{}\",\"git_head\":\"{}\",\"timestamp_secs\":{}}}",
+        common::json_escape(task_id),
+        common::json_escape(branch),
+        common::json_escape(phase),
+        common::json_escape(&git_head),
         common::now_unix()
     );
     let dir = format!("{}/worker-checkpoints", checkpoint_dir());
     if fs::create_dir_all(&dir).is_err() {
         return;
     }
-    let _ = common::atomic_write(&checkpoint_path_for(&checkpoint.task_id), &json);
-    if mirror_legacy {
-        let _ = common::atomic_write(&worker_checkpoint_path(), &json);
+    let _ = common::atomic_write(&checkpoint_path_for(task_id), &json);
+    write_checkpoint_diff(task_id, phase, worktree_path);
+}
+
+/// Current HEAD of the worktree, captured into the checkpoint so a resume or
+/// human review can pin the exact commit a phase ran against. Empty when the
+/// worktree has no commits yet or git is unavailable.
+fn git_head_sha(worktree: &str) -> String {
+    Command::new("git")
+        .current_dir(worktree)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Snapshot of the working-tree diff at a checkpoint phase, written beside
+/// the JSON so an interrupted task leaves a human-reviewable record of what
+/// was in flight.
+fn write_checkpoint_diff(task_id: &str, phase: &str, worktree: &str) {
+    let dir = format!("{}/checkpoints", common::state_dir());
+    if fs::create_dir_all(&dir).is_err() {
+        return;
     }
+    let path = format!("{}/{}-{}.diff", dir, task_id, phase);
+    let diff = match Command::new("git")
+        .current_dir(worktree)
+        .args(["diff", "HEAD"])
+        .output()
+    {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => return,
+    };
+    let _ = common::atomic_write(&path, &diff);
+}
+
+/// Swap the router backend file from the Q8 llama lane to the lighter Q4 MLX
+/// lane when thermals turn Serious. Returns true only when a swap happened.
+fn try_throttle_router_backend() -> bool {
+    let path = format!("{}/router-backend", common::state_dir());
+    let current = fs::read_to_string(&path).unwrap_or_default();
+    if current.contains("llama") && common::atomic_write(&path, "mlx").is_ok() {
+        common::log_event("thermal_throttle", "swapped llama→mlx for thermal safety");
+        return true;
+    }
+    false
+}
+
+/// One line per thermal decision, for an operator watching pressure over time.
+fn log_thermal(label: &str, action: &str) {
+    let dir = format!("{}/thermal-log", common::state_dir());
+    let _ = fs::create_dir_all(&dir);
+    let path = format!("{}/thermal.csv", dir);
+    if let Ok(mut f) = fs::OpenOptions::new().append(true).create(true).open(&path) {
+        let _ = writeln!(f, "{},{},{}", common::now_unix(), label, action);
+    }
+}
+
+/// Estimated context tokens from `kv-manage check`, or None when the probe or
+/// the parse came up empty.
+fn kv_check_tokens(kv_bin: &str) -> Option<u64> {
+    let out = Command::new(kv_bin).arg("check").output().ok()?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let at = stdout.find("tokens:")? + "tokens:".len();
+    let rest = stdout[at..].trim_start();
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    if end == 0 {
+        return None;
+    }
+    rest[..end].parse().ok()
 }
 
 fn clear_worker_checkpoint(task_id: &str) {
@@ -529,6 +601,7 @@ struct WorkerConfig<'a> {
     kv_ok: bool,
     has_commits: bool,
     continuous: bool,
+    #[allow(dead_code)] // reserved for future parallel-worker coordination
     parallel: usize,
     ctx_limit: u64,
 }
@@ -830,18 +903,28 @@ fn worker_thread_loop(cfg: &WorkerConfig, shared: &WorkerShared) {
     loop {
         shared.thermal.wait();
         let thermal = common::thermal_state();
+        let thermal_label = common::thermal_label(&thermal).to_string();
         if thermal.as_deref() == Some("Critical") {
+            log_thermal(&thermal_label, "pause-300s");
             println!("Thermal Critical! Pausing all workers 300s...");
             common::log_event("worker_thermal", "critical: sleeping 300s");
             shared.thermal.pause_for(Duration::from_secs(300));
             continue;
         }
         if thermal.as_deref() == Some("Serious") {
+            let action = if try_throttle_router_backend() {
+                "throttle-q8-to-q4"
+            } else {
+                "throttle-60s"
+            };
+            log_thermal(&thermal_label, action);
             println!("Thermal Serious: throttling 60s before next task...");
             common::log_event("worker_thermal", "serious: sleeping 60s");
             shared.thermal.pause_for(Duration::from_secs(60));
             continue;
         }
+
+        log_thermal(&thermal_label, "continue");
 
         let content = match fs::read_to_string(cfg.tasks_file) {
             Ok(c) => c,
@@ -991,12 +1074,7 @@ fn worker_thread_loop(cfg: &WorkerConfig, shared: &WorkerShared) {
                 return;
             }
 
-            let checkpoint = |phase: &str| WorkerCheckpoint {
-                task_id: task.id.clone(),
-                branch: branch.clone(),
-                phase: phase.to_string(),
-            };
-            write_worker_checkpoint(&checkpoint("Dispatch"), cfg.parallel == 1);
+            write_worker_checkpoint(&task.id, &branch, "Dispatch", &work_root);
 
             let context_override = if branched.is_some() {
                 apply_context_override(cfg.root, &work_root, cfg.model, cfg.ctx_limit)
@@ -1016,6 +1094,36 @@ fn worker_thread_loop(cfg: &WorkerConfig, shared: &WorkerShared) {
             );
             let timeout = task_timeout();
             let logpath = task_log_path(&task.id);
+            // Auto-save a "Running" checkpoint during long dispatches so a
+            // crash mid-task still leaves a recent diff snapshot to resume from.
+            let autosave_stop = Arc::new(AtomicBool::new(false));
+            let autosave_state = Arc::new(Mutex::new((task.id.clone(), branch.clone())));
+            let autosave_handle = {
+                let stop = Arc::clone(&autosave_stop);
+                let state = Arc::clone(&autosave_state);
+                let wt = work_root.clone();
+                std::thread::spawn(move || {
+                    let interval = env::var("LOOP_STUDIO_CHECKPOINT_INTERVAL")
+                        .ok()
+                        .and_then(|v| v.trim().parse::<u64>().ok())
+                        .unwrap_or(300);
+                    let tick = Duration::from_secs(1);
+                    let mut since = 0u64;
+                    loop {
+                        std::thread::sleep(tick);
+                        if stop.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        since += tick.as_secs();
+                        if since >= interval {
+                            since = 0;
+                            let (tid, br) =
+                                state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                            write_worker_checkpoint(&tid, &br, "Running", &wt);
+                        }
+                    }
+                })
+            };
             let mut impl_ok = run_logged_env(
                 "opencode2",
                 &["run", &prompt],
@@ -1026,8 +1134,10 @@ fn worker_thread_loop(cfg: &WorkerConfig, shared: &WorkerShared) {
                 &format!("opencode2 task {}", task.id),
             )
             .unwrap_or(false);
+            autosave_stop.store(true, Ordering::SeqCst);
+            let _ = autosave_handle.join();
 
-            write_worker_checkpoint(&checkpoint("TestGate"), cfg.parallel == 1);
+            write_worker_checkpoint(&task.id, &branch, "TestGate", &work_root);
             let mut test_ok = if impl_ok {
                 println!("  [3b/4] Reliability gate: project tests...");
                 run_logged(
@@ -1049,8 +1159,18 @@ fn worker_thread_loop(cfg: &WorkerConfig, shared: &WorkerShared) {
                 let mut round: u32 = 0;
                 loop {
                     round += 1;
-                    write_worker_checkpoint(&checkpoint("Review"), cfg.parallel == 1);
-                    match review_diff(&work_root, &task.desc, &logpath) {
+                    if round > 1 && cfg.kv_ok {
+                        if let Some(tokens) = kv_check_tokens(cfg.kv_bin) {
+                            if tokens * 100 > cfg.ctx_limit * 90 {
+                                let _ = Command::new(cfg.kv_bin)
+                                    .args(["truncate", "--tokens", "16000", "--keep", "8000"])
+                                    .output();
+                                common::log_event("context_truncate", "between review rounds");
+                            }
+                        }
+                    }
+                    write_worker_checkpoint(&task.id, &branch, "Review", &work_root);
+                    match review_diff(&work_root, &task.id, &task.desc, &logpath) {
                         ReviewOutcome::Approve => {
                             println!("  [3c/4] Reviewer round {}: approve.", round);
                             common::log_event(
