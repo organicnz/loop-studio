@@ -31,7 +31,7 @@ brew "tokei"                # parallel LoC counter
 brew "jujutsu"              # jj binary, Rust git evolution
 brew "lazygit"              # best Git TUI
 brew "uv"                   # Astral Python env (replaces pip/poetry)
-brew "mise"                 # node/python version pinning
+brew "mise"                 # Rust/uv toolchain pinning (see mise.toml)
 brew "rustup"              # rustup-init; toolchains via `rustup update stable`
 brew "lefthook"            # repository-native pre-commit delivery gate
 # brew "rust"               # NOT used — toolchains via rustup instead

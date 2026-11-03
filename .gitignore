@@ -2,6 +2,7 @@
 /rust-src/target/
 /rust-src/**/target/
 *.profraw
+.snapshots/
 /scripts/bin/
 *.rs.bk
 

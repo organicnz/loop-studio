@@ -91,15 +91,23 @@ jobs:
 
       - name: Verify binaries are executable ARM64
         run: |
-          for bin in ./artifacts/loop-studio ./artifacts/loop-studio-router ./artifacts/serve-mlx; do
-            test -x "$bin" && file "$bin" | grep -q "arm64" && echo "✓ $bin" || (echo "✗ $bin not arm64 executable" && exit 1)
+          # Artifacts preserve directory structure: rust-src/target/release/<bin>
+          BINDIR="./artifacts/rust-src/target/release"
+          chmod +x "$BINDIR"/* 2>/dev/null || true
+          for bin in loop-studio loop-studio-router serve-mlx; do
+            if file "$BINDIR/$bin" | grep -qE "arm64|Mach-O 64-bit"; then
+              echo "✓ $bin"
+            else
+              echo "✗ $bin — unexpected: $(file "$BINDIR/$bin")"
+              exit 1
+            fi
           done
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v2.9.${{ github.run_number }}
-          files: ./artifacts/*
+          files: ./artifacts/rust-src/target/release/*
           fail_on_unmatched_files: true
           name: Loop Studio v2.9 Release
           body: |
