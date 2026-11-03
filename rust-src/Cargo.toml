@@ -34,3 +34,7 @@ path = "src/loop_studio_router.rs"
 [[bin]]
 name = "kv-manage"
 path = "src/kv_manage.rs"
+
+[[bin]]
+name = "package-app"
+path = "src/package_app.rs"

@@ -63,7 +63,8 @@ validate:
 
 app-check:
 	@echo "📦 Building and verifying the packaged Loop Studio app..."
-	@cd SwiftUI && ./package-app.sh
+	@cd rust-src && cargo build --release --bin package-app
+	@./rust-src/target/release/package-app --release
 	@plutil -lint SwiftUI/.build/'Loop Studio.app'/Contents/Info.plist
 	@test "$$(/usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity:NSAllowsLocalNetworking' SwiftUI/.build/'Loop Studio.app'/Contents/Info.plist)" = "true"
 	@! /usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity:NSAllowsArbitraryLoads' SwiftUI/.build/'Loop Studio.app'/Contents/Info.plist >/dev/null 2>&1
@@ -71,7 +72,8 @@ app-check:
 
 app:
 	@echo "📦 Packaging Loop Studio macOS app..."
-	@cd SwiftUI && ./package-app.sh
+	@cd rust-src && cargo build --release --bin package-app
+	@./rust-src/target/release/package-app
 
 hooks-install:
 	@lefthook install
@@ -179,7 +181,8 @@ install: build
 	@install -m 755 ./rust-src/target/release/pull-models $$HOME/.local/bin/pull-models
 	@install -m 755 ./rust-src/target/release/kv-manage $$HOME/.local/bin/loop-studio-kv-manage
 	@install -m 755 ./rust-src/target/release/kv-manage $$HOME/.local/bin/kv-manage
-	@echo "✅ Installed 100% pure Rust binaries to ~/.local/bin: loop-studio, loop-studio-router, loop-studio-tui, serve-mlx, serve-llama, pull-models, kv-manage, bootstrap"
+	@install -m 755 ./rust-src/target/release/package-app $$HOME/.local/bin/loop-studio-package-app
+	@echo "✅ Installed 100% pure Rust binaries to ~/.local/bin: loop-studio, loop-studio-router, loop-studio-tui, serve-mlx, serve-llama, pull-models, kv-manage, bootstrap, package-app"
 
 clean:
 	@cd rust-src && cargo clean

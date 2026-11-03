@@ -245,7 +245,8 @@ pub fn disk_free_gib(path: &str) -> Option<f64> {
     Some(avail / 1048576.0)
 }
 
-pub fn launchd_loaded() -> (bool, bool) {
+/// Returns (router_loaded, mlx_loaded, worker_loaded)
+pub fn launchd_loaded() -> (bool, bool, bool) {
     let out = Command::new("launchctl")
         .arg("list")
         .output()
@@ -253,6 +254,7 @@ pub fn launchd_loaded() -> (bool, bool) {
         .unwrap_or_default();
     (
         out.lines().any(|l| l.contains("org.loopstudio.router")),
+        out.lines().any(|l| l.contains("org.loopstudio.serve-mlx")),
         out.lines().any(|l| l.contains("org.loopstudio.worker")),
     )
 }
@@ -469,13 +471,14 @@ pub fn cmd_doctor(root: &str, args: &[String]) -> i32 {
         });
     }
 
-    let (router_ld, worker_ld) = launchd_loaded();
+    let (router_ld, mlx_ld, worker_ld) = launchd_loaded();
     checks.push(Check {
         name: "launchd",
         level: "ok",
         detail: format!(
-            "router={} worker={}",
+            "router={} mlx={} worker={}",
             if router_ld { "loaded" } else { "not loaded" },
+            if mlx_ld { "loaded" } else { "not loaded" },
             if worker_ld { "loaded" } else { "not loaded" }
         ),
     });
