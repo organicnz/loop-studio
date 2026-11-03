@@ -36,11 +36,7 @@ pub fn which(cmd: &str) -> Option<String> {
     }
     // Fallback: probe well-known install locations that launchd/GUI apps
     // may not have in their inherited PATH (homebrew, mise, local bin).
-    for dir in [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-    ] {
+    for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
         let cand = format!("{}/{}", dir, cmd);
         if is_executable(Path::new(&cand)) {
             return Some(cand);
