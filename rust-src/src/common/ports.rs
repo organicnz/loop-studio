@@ -3,7 +3,13 @@
 use std::env;
 use std::fs;
 
-use super::home_dir;
+// `home_dir` lives in `common` (the parent of this module in its canonical
+// home) and is reached through `crate::common` rather than `super` so the file
+// compiles unchanged when a binary pulls it in a second time with
+// `#[path = "common/ports.rs"] mod shared_ports;` — there `super` is the
+// including binary's root, not `common`, but `crate::common` is the same
+// module in every binary (each one declares `mod common;` at its root).
+use crate::common::home_dir;
 
 /// Centralized ports — env-overridable, single source of truth.
 /// loop_studio.rs / loop_studio_tui.rs must call these instead of hardcoding 8000/8081/11434.
@@ -130,8 +136,13 @@ mod tests {
     /// defaults instead of returning a port nothing can dial.
     #[test]
     fn a_zero_port_never_reaches_a_reader() {
-        // env mutation is process-global; this is the only test in this binary
-        // that writes these three, and it restores them.
+        // env mutation is process-global. This file is compiled twice in the
+        // router binary — once as `common::ports` and once as the `#[path]`-
+        // included `shared_ports` — and the router has its own port test that
+        // writes these three too. A second writer racing the first on the same
+        // process-global vars is a flake, not a test, so every one of them takes
+        // one lock (`crate::common::PORT_ENV_TEST_LOCK`) and runs one at a time.
+        let _env_lock = crate::common::PORT_ENV_TEST_LOCK.lock().unwrap();
         let saved: Vec<_> = ["LOOP_STUDIO_ROUTER_PORT", "LOOP_STUDIO_LLAMA_PORT", "LOOP_STUDIO_OLLAMA_PORT"]
             .iter()
             .map(|v| (*v, env::var(v).ok()))

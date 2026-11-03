@@ -26,6 +26,13 @@
 
 mod common;
 
+// Port resolution is shared with `common::ports` by file inclusion, not by a
+// crate dependency: the same file is compiled a second time here as
+// `shared_ports`, so the router's port readers and `common`'s stay one rule in
+// one place even though the two modules cannot call each other. The router
+// delegates its port resolution to `common::*`; `common::ports::*` is
+// the same code every other binary compiles.
+
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{self, Read, Write};

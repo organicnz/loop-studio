@@ -466,6 +466,17 @@ pub fn strip_jsonc_comments(s: &str) -> String {
 
 // --------------------------------------------------------------------- tests -
 
+/// Serializes tests that mutate the `LOOP_STUDIO_*` / `MLX_PORT` env vars.
+///
+/// `ports.rs` is compiled twice in the router binary — as `common::ports` and
+/// as the `#[path]`-included `shared_ports` — and the router has its own port
+/// test on top. Two writers racing the same process-global env vars is a flake,
+/// not a test, so each of them takes this lock and runs one at a time. It is
+/// test-only: production never holds it, and uncontended in binaries that
+/// compile `ports.rs` only once.
+#[cfg(test)]
+pub(crate) static PORT_ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     #![deny(dead_code)]
