@@ -1497,4 +1497,36 @@ mod tests {
         .expect("second task");
         assert_eq!(picked.id, "b-2");
     }
+
+    #[test]
+    fn checkpoint_write_read_clear_roundtrip() {
+        let tmp_worktree = std::env::temp_dir()
+            .join(format!("loop-studio-test-cp-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&tmp_worktree);
+        let worktree_str = tmp_worktree.to_string_lossy().to_string();
+
+        // Write a checkpoint.
+        write_worker_checkpoint("t-test-001", "task/t-test-001", "Dispatch", &worktree_str);
+
+        // The checkpoint is at ~/.local/state/loop-studio/worker-checkpoints/<id>.json
+        let cp_dir = format!("{}/.local/state/loop-studio/worker-checkpoints", common::home_dir());
+        let cp_path = format!("{}/t-test-001.json", cp_dir);
+        let content = fs::read_to_string(&cp_path).expect("checkpoint should exist after write");
+        assert!(content.contains("\"task_id\":\"t-test-001\""), "{content}");
+        assert!(content.contains("\"phase\":\"Dispatch\""), "{content}");
+
+        // Parsed fields must round-trip.
+        let cp = parse_checkpoint(&content).expect("parsed");
+        assert_eq!(cp.task_id, "t-test-001");
+        assert_eq!(cp.phase, "Dispatch");
+
+        // Clear removes the file.
+        clear_worker_checkpoint("t-test-001");
+        assert!(
+            !std::path::Path::new(&cp_path).exists(),
+            "checkpoint should be gone after clear"
+        );
+
+        let _ = fs::remove_dir_all(&tmp_worktree);
+    }
 }
