@@ -25,7 +25,7 @@ path = "src/loop_studio_tui.rs"
 
 [[bin]]
 name = "loop-studio"
-path = "src/loop_studio.rs"
+path = "src/loop_studio/main.rs"
 
 [[bin]]
 name = "loop-studio-router"
