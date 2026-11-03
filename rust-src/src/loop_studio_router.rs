@@ -35,15 +35,53 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-// Backend IDs
+// Backend IDs — orderings (not addressable lanes)
 const BACKEND_AUTO: usize = 0;
-const BACKEND_MLX: usize = 1;
-const BACKEND_LLAMA: usize = 2;
-const BACKEND_OLLAMA: usize = 3;
 const BACKEND_FASTEST: usize = 4;
+
+/// The three addressable inference lanes.
+///
+/// Discriminant values (1, 2, 3) are the `usize` IDs used everywhere else in
+/// this file so that `usize::from(b) == BACKEND_MLX` etc. holds without any
+/// translation layer. `BACKEND_AUTO` (0) and `BACKEND_FASTEST` (4) are
+/// orderings, not backends, and live outside this enum.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Backend {
+    Mlx = 1,
+    Llama = 2,
+    Ollama = 3,
+}
+
+impl TryFrom<usize> for Backend {
+    type Error = ();
+    fn try_from(v: usize) -> Result<Self, ()> {
+        match v {
+            1 => Ok(Backend::Mlx),
+            2 => Ok(Backend::Llama),
+            3 => Ok(Backend::Ollama),
+            _ => Err(()),
+        }
+    }
+}
+
+impl From<Backend> for usize {
+    fn from(b: Backend) -> usize {
+        b as usize
+    }
+}
+
+// Keep the old constants as aliases so the rest of the file compiles unchanged
+// at the call sites that haven't been converted to the enum yet, and so that
+// the catalog-slot indexing (which uses raw `usize`) remains unambiguous.
+const BACKEND_MLX: usize = Backend::Mlx as usize;
+const BACKEND_LLAMA: usize = Backend::Llama as usize;
+const BACKEND_OLLAMA: usize = Backend::Ollama as usize;
+
 /// The three addressable lanes, and the number of per-backend slots the
 /// catalog memo keeps. `BACKEND_FASTEST` and `BACKEND_AUTO` are orderings, not
-/// backends, so they have no slot.
+/// backends, so they have no slot. Slots are indexed by the `Backend as usize`
+/// discriminant (1..=3); slot 0 is unused padding so the index arithmetic is
+/// identity rather than `id - 1`.
 const BACKEND_COUNT: usize = 4;
 
 // --------------------------------------------------------------- host facts --
@@ -182,23 +220,23 @@ fn port_ollama() -> u16 {
     common::ollama_port()
 }
 
-/// Tier order with live ports: [(id, port)] MLX -> llama -> Ollama.
-fn tier_backends() -> Vec<(usize, u16)> {
+/// Tier order with live ports: [(Backend, port)] Mlx -> Llama -> Ollama.
+fn tier_backends() -> Vec<(Backend, u16)> {
     vec![
-        (BACKEND_MLX, port_mlx()),
-        (BACKEND_LLAMA, port_llama()),
-        (BACKEND_OLLAMA, port_ollama()),
+        (Backend::Mlx, port_mlx()),
+        (Backend::Llama, port_llama()),
+        (Backend::Ollama, port_ollama()),
     ]
 }
 
 #[allow(dead_code)]
-fn backend_id_for_port(port: u16) -> usize {
-    for (id, p) in tier_backends() {
+fn backend_id_for_port(port: u16) -> Option<Backend> {
+    for (b, p) in tier_backends() {
         if p == port {
-            return id;
+            return Some(b);
         }
     }
-    BACKEND_AUTO
+    None
 }
 
 const MAX_HEADERS: usize = 65536;
@@ -242,7 +280,17 @@ fn body_idle_timeout() -> Duration {
     budget_secs("LOOP_STUDIO_ROUTER_BODY_IDLE_SECS", 30)
 }
 
-fn backend_name(id: usize) -> &'static str {
+fn backend_name(b: Backend) -> &'static str {
+    match b {
+        Backend::Mlx => "mlx",
+        Backend::Llama => "llama",
+        Backend::Ollama => "ollama",
+    }
+}
+
+/// Label for *any* backend id, including the two orderings. Used for
+/// status output and log lines where the preferred id might be AUTO or FASTEST.
+fn backend_label(id: usize) -> &'static str {
     match id {
         BACKEND_MLX => "mlx",
         BACKEND_LLAMA => "llama",
@@ -287,12 +335,11 @@ fn backend_id(name: &str) -> usize {
     backend_id_strict(name).unwrap_or(BACKEND_AUTO)
 }
 
-fn backend_port(id: usize) -> u16 {
-    match id {
-        BACKEND_MLX => port_mlx(),
-        BACKEND_LLAMA => port_llama(),
-        BACKEND_OLLAMA => port_ollama(),
-        _ => port_mlx(),
+fn backend_port(b: Backend) -> u16 {
+    match b {
+        Backend::Mlx => port_mlx(),
+        Backend::Llama => port_llama(),
+        Backend::Ollama => port_ollama(),
     }
 }
 
@@ -1684,7 +1731,7 @@ fn load_persisted_backend() -> usize {
 /// was dropped, so a read-only or full `~/.lac` silently lost the operator's
 /// choice and the gateway came back on the previous lane.
 fn persist_backend(id: usize) -> bool {
-    common::atomic_write(&backend_pref_path(), backend_name(id)).is_ok()
+    common::atomic_write(&backend_pref_path(), backend_label(id)).is_ok()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1790,7 +1837,7 @@ fn handle_lac_status(
             "  \"stats\": {}{}\n}}"
         ),
         router_state,
-        backend_name(preferred),
+        backend_label(preferred),
         active_name,
         active_port,
         started.elapsed().as_secs(),
@@ -1867,12 +1914,12 @@ fn handle_lac_switch(
     let persisted = persist_backend(new_target);
     let body = format!(
         "{{\n  \"status\": \"switched\",\n  \"target\": \"{}\",\n  \"port\": {},\n  \"persisted\": {}\n}}",
-        backend_name(new_target),
+        backend_label(new_target),
         // `fastest` and `auto` are lane *orderings*, not a port, and reporting
         // one is how a caller ends up dialling MLX because it asked for the
         // fastest lane. `null` says there is no such port.
-        if new_target == BACKEND_MLX || new_target == BACKEND_LLAMA || new_target == BACKEND_OLLAMA {
-            backend_port(new_target).to_string()
+        if let Ok(b) = Backend::try_from(new_target) {
+            backend_port(b).to_string()
         } else {
             "null".to_string()
         },
@@ -2141,44 +2188,47 @@ fn rebuild_catalog(
     // request thread only ever waits for the slowest probe rather than for the
     // sum, and a lane that hangs costs the same as it always did rather than
     // three times as much.
-    let lanes: Vec<(usize, u16)> = tier_backends()
+    let lanes: Vec<(Backend, u16)> = tier_backends()
         .into_iter()
         .filter(|(_, port)| hc.ready(*port))
         .collect();
     if lanes.is_empty() {
         return;
     }
-    let mut probed: Vec<(usize, u16, Option<String>)> = Vec::with_capacity(lanes.len());
+    let mut probed: Vec<(Backend, u16, Option<String>)> = Vec::with_capacity(lanes.len());
     let mut workers = Vec::with_capacity(lanes.len());
-    for (idx, port) in lanes {
+    for (b, port) in lanes {
         // A fresh per-backend entry needs no probe at all, and taking the
         // lock-free fast path first keeps the common warm case off the thread
         // path entirely.
+        let idx = usize::from(b);
         if let Some(cached) = catalog.entry(idx) {
-            probed.push((idx, port, Some(cached)));
+            probed.push((b, port, Some(cached)));
             continue;
         }
         let catalog = Arc::clone(catalog);
         workers.push((
-            idx,
+            b,
             port,
             std::thread::Builder::new()
-                .name(format!("lac-catalog-{}", backend_name(idx)))
+                .name(format!("lac-catalog-{}", backend_name(b)))
                 .spawn(move || {
                     // Still the `try_lock` probe: if a peer is already on this
                     // backend, this thread declines rather than waiting, and the
                     // peer will populate the entry.
-                    (idx, port, catalog.probe(idx, || backend_catalog(port)))
+                    let idx = usize::from(b);
+                    (b, port, catalog.probe(idx, || backend_catalog(port)))
                 })
                 .ok(),
         ));
     }
-    for (idx, port, worker) in workers {
+    for (b, port, worker) in workers {
+        let idx = usize::from(b);
         let Some(handle) = worker else {
             // No thread could be started. Probe inline rather than dropping the
             // lane, so a thread-limit blip degrades to the old behaviour rather
             // than to a silently smaller model list.
-            probed.push((idx, port, catalog.probe(idx, || backend_catalog(port))));
+            probed.push((b, port, catalog.probe(idx, || backend_catalog(port))));
             continue;
         };
         match handle.join() {
@@ -2186,7 +2236,7 @@ fn rebuild_catalog(
             Err(_) => {
                 // A panicking probe is a dead lane, not a dead endpoint.
                 eprintln!("[loop-studio-router] catalog probe for :{port} panicked; skipping it");
-                probed.push((idx, port, None));
+                probed.push((b, port, None));
             }
         }
     }
@@ -2196,8 +2246,8 @@ fn rebuild_catalog(
     // Merged in tier order, not completion order, so the document is identical
     // however the probes happened to interleave. A model list that reorders
     // itself between polls is a model list that makes a picker look unstable.
-    probed.sort_by_key(|(idx, _, _)| *idx);
-    for (_idx, port, body) in probed {
+    probed.sort_by_key(|(b, _, _)| usize::from(*b));
+    for (_b, port, body) in probed {
         let Some(body) = body else {
             continue;
         };
@@ -2290,7 +2340,7 @@ fn classify_read_error(kind: io::ErrorKind) -> StreamEnd {
 }
 
 /// Ordered candidate backends. Default policy is tier order
-/// (MLX -> llama -> Ollama); `fastest` sorts ready backends by measured
+/// (Mlx -> Llama -> Ollama); `fastest` sorts ready backends by measured
 /// EWMA instead. Backends that are down OR breaker-tripped are skipped.
 /// A mapped model hint (AUTO/FASTEST only) goes first — it costs nothing
 /// and avoids 404s on backends that never advertised that model.
@@ -2300,12 +2350,12 @@ fn pick_backends(
     hc: &HealthCache,
     stats: &StatsMap,
     model_hint: Option<u16>,
-) -> Vec<(usize, u16)> {
+) -> Vec<(Backend, u16)> {
     let usable = |port: u16| hc.ready(port) && !breaker_open_for(stats, port);
     let tier = tier_backends();
 
     if preferred == BACKEND_FASTEST {
-        let mut c: Vec<(usize, u16)> = tier
+        let mut c: Vec<(Backend, u16)> = tier
             .iter()
             .copied()
             .filter(|(_, port)| usable(*port))
@@ -2327,24 +2377,28 @@ fn pick_backends(
         return c;
     }
 
-    let mut order: Vec<(usize, u16)> = Vec::new();
+    let mut order: Vec<(Backend, u16)> = Vec::new();
     if preferred != BACKEND_AUTO {
-        let port = backend_port(preferred);
+        // SAFETY: preferred is a usize stored in the AtomicUsize; values
+        // outside the Backend range (AUTO=0, FASTEST=4) are guarded by the
+        // `preferred != BACKEND_AUTO` check above and the FASTEST branch above.
+        let b = Backend::try_from(preferred).unwrap_or(Backend::Mlx);
+        let port = backend_port(b);
         if usable(port) {
-            order.push((preferred, port));
+            order.push((b, port));
         }
     } else if let Some(mp) = model_hint {
         // Mapped model first (AUTO only; an explicit pin always wins).
-        if let Some((hid, _)) = tier.iter().find(|(_, p)| *p == mp) {
-            let hid = *hid;
+        if let Some((hb, _)) = tier.iter().find(|(_, p)| *p == mp) {
+            let hb = *hb;
             if usable(mp) {
-                order.push((hid, mp));
+                order.push((hb, mp));
             }
         }
     }
-    for (id, port) in &tier {
-        if !order.iter().any(|(i, _)| *i == *id) && usable(*port) {
-            order.push((*id, *port));
+    for (b, port) in &tier {
+        if !order.iter().any(|(ob, _)| *ob == *b) && usable(*port) {
+            order.push((*b, *port));
         }
     }
     order
@@ -3453,6 +3507,230 @@ fn refuse(
     json_response(client, status, body, cors)
 }
 
+/// Host gate, CORS gate, and bearer check, extracted from `handle_connection`.
+///
+/// Returns `None` if the connection was refused (the refusal response has
+/// already been written to `client`), or `Some((token_ok, cors_origin))` to
+/// continue. `cors_origin` is `None` for native clients and `Some(origin)` for
+/// allow-listed browser origins.
+///
+/// `OPTIONS` is handled here too — it belongs before the auth gate because a
+/// CORS preflight never carries credentials, so demanding one would just break
+/// browsers.
+#[allow(clippy::too_many_arguments)]
+fn check_auth(
+    client: &mut TcpStream,
+    initial: &[u8],
+    peer: &SocketAddr,
+    token: &str,
+    allowed_hosts: &[String],
+    allowed_origins: &[String],
+    method: &str,
+    path: &str,
+    rid_n: usize,
+) -> Option<(bool, Option<String>)> {
+    // Browser-facing gates, ahead of every other decision including auth, so
+    // a rebound or drive-by request is refused before it can read a status,
+    // move the preferred backend, or reach an inference backend. See the note
+    // above `host_served` for why both controls are needed.
+    let request_origin = first_header(initial, "origin");
+    // The verdict is reused for this connection's CORS block, so a refused
+    // origin gets a 403 with no CORS headers: the page that provoked it
+    // cannot read the refusal either.
+    let cors = cors_origin(request_origin.as_deref(), allowed_origins);
+    if request_origin.is_some() && cors.is_none() {
+        let _ = refuse(client, "403 Forbidden", ORIGIN_FORBIDDEN, None, initial);
+        eprintln!(
+            "[loop-studio-router rid={}] {} {} -> 403 origin not allowed",
+            rid_n, method, path
+        );
+        return None;
+    }
+    // The gate above cannot see a drive-by request, because the one shape that
+    // mutates state is the one shape that carries no `Origin`. Per Fetch §4.1 a
+    // `mode: "no-cors"` GET subresource load — `<img>`, `<link>`, `<video>` —
+    // is not a CORS request, so no preflight is sent and no `Origin` is
+    // appended. That is exactly `<img src="http://127.0.0.1:8000/lac/switch?...">`,
+    // and `handle_lac_switch` persists its answer, so a page the operator
+    // merely visited can repoint the gateway at a lane that is not running and
+    // keep that choice across restarts. Reads are not at risk — they can only
+    // be read by a script that already passed the origin gate — so this is
+    // scoped to the endpoint that writes.
+    //
+    // `Sec-Fetch-Site` is the signal `Origin` cannot carry here, and it is
+    // appended by the browser on *every* request, no-cors subresource loads
+    // included. It costs nothing for the callers this must not break: curl,
+    // `lac`, and the TUI all send neither header, and a same-origin fetch from
+    // the operator's own dashboard sends `same-origin`. Only a request the
+    // browser attributes to another site is refused.
+    let cross_site = first_header(initial, "sec-fetch-site")
+        .map(|v| v.trim().eq_ignore_ascii_case("cross-site"))
+        .unwrap_or(false);
+    if cross_site && (path.starts_with("/loop-studio/switch") || path.starts_with("/lac/switch")) {
+        let _ = refuse(client, "403 Forbidden", ORIGIN_FORBIDDEN, None, initial);
+        eprintln!(
+            "[loop-studio-router rid={}] {} {} -> 403 cross-site fetch on a mutating endpoint",
+            rid_n, method, path
+        );
+        return None;
+    }
+    // The token verdict is computed once, here: the Host gate needs it as
+    // proof that this is not a browser, and the auth gate below reuses it.
+    let token_ok = !token.is_empty()
+        && bearer_from(initial)
+            .map(|t| constant_time_eq(&t, token))
+            .unwrap_or(false);
+    if !host_served(
+        first_header(initial, "host").as_deref(),
+        token_ok,
+        allowed_hosts,
+    ) {
+        let _ = refuse(client, "421 Misdirected Request", HOST_MISDIRECTED, cors.as_deref(), initial);
+        eprintln!(
+            "[loop-studio-router rid={}] {} {} -> 421 host not served",
+            rid_n, method, path
+        );
+        return None;
+    }
+    if method == "OPTIONS" {
+        // Answered before the auth gate on purpose: a CORS preflight never
+        // carries credentials, so demanding one would just break browsers.
+        // The reply is a static 204 with no backend contact, so it leaks
+        // nothing about this deployment.
+        let _ = handle_options(client.try_clone().ok()?, cors.as_deref());
+        return None;
+    }
+
+    // Remote Bearer gate: loopback is token-less; any non-loopback peer
+    // without the exact token gets 401 and is never routed nor status-read.
+    let peer_loopback = is_loopback_peer(peer);
+    let proxy_forwarded = forwarded_request(initial);
+    let auth_required = !peer_loopback || proxy_forwarded || !token.is_empty();
+    if auth_required && !token_ok {
+        drain_refused_body(client, initial);
+        let _ = unauthorized(client, cors.as_deref());
+        eprintln!("[loop-studio-router rid={}] {} {} -> 401 remote-auth", rid_n, method, path);
+        return None;
+    }
+
+    Some((token_ok, cors))
+}
+
+/// Handle `/loop-studio/*`, `/lac/*`, and the merged `/v1/models` endpoint.
+///
+/// Returns `None` if the request was handled (the response has been written and
+/// `client` is consumed). Returns `Some(client)` to fall through to the proxy
+/// path — the caller reclaims ownership.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_internal(
+    client: TcpStream,
+    method: &str,
+    path: &str,
+    preferred: &Arc<AtomicUsize>,
+    hc: &Arc<HealthCache>,
+    stats: &StatsMap,
+    routes: &RouteMap,
+    host_facts: &Arc<HostFactsCache>,
+    catalog: &CatalogCache,
+    started: Instant,
+    inflight: usize,
+    rid_n: usize,
+    cors: Option<&str>,
+) -> Option<TcpStream> {
+    // The `/lac/*` paths are the pre-rename names, kept working so an
+    // operator's existing scripts and dashboards do not break on the day the
+    // project was renamed. The canonical paths are the `/loop-studio/*` ones.
+    if path == "/loop-studio/status"
+        || path == "/loop-studio/health"
+        || path == "/lac/status"
+        || path == "/lac/health"
+        || path == "/v1/status"
+        || path == "/v1/health"
+    {
+        let _ = handle_lac_status(
+            client,
+            preferred.load(Ordering::SeqCst),
+            hc,
+            stats,
+            routes,
+            host_facts,
+            started,
+            inflight,
+            cors,
+        );
+        return None;
+    }
+
+    if path.starts_with("/loop-studio/switch") || path.starts_with("/lac/switch") {
+        let _ = handle_lac_switch(client, path, preferred, cors);
+        return None;
+    }
+
+    // Smart endpoint: aggregate model catalogs so OpenCode's picker sees
+    // every live backend at once.
+    if method == "GET" && (path == "/v1/models" || path.starts_with("/v1/models?")) {
+        match merged_models(hc, routes, catalog) {
+            Some(body) => {
+                let mut c = client;
+                let _ = json_response(&mut c, "200 OK", &body, cors);
+                eprintln!("[loop-studio-router rid={}] GET /v1/models -> merged ({} bytes)", rid_n, body.len());
+                return None;
+            }
+            None => {
+                // Model catalog empty — fall through to single-backend forward
+                // by returning Some(client) below.
+            }
+        }
+    }
+
+    Some(client)
+}
+
+/// Validate request framing headers (Content-Length, Transfer-Encoding, and
+/// their mutual consistency). Returns `Ok((content_length, is_chunked))` on
+/// success, or `Err((status, body))` when the framing is unacceptable.
+///
+/// The caller must write the refusal through `refuse()`, not `write_all()`:
+/// the drain is what lets a client that is still uploading read the status
+/// instead of seeing its write reset. Extracted from `handle_connection` to
+/// keep that function under 150 lines.
+fn validate_request_framing(
+    initial: &[u8],
+    initial_headers: usize,
+) -> Result<(Option<usize>, bool), (&'static str, &'static str)> {
+    let request_content_length = match parse_content_length_strict(&initial[..initial_headers]) {
+        Ok(value) => value,
+        Err(_) => {
+            return Err((
+                "400 Bad Request",
+                "{\"error\":{\"message\":\"invalid request header\"}}",
+            ));
+        }
+    };
+    let chunked_request = match has_chunked_transfer_encoding(&initial[..initial_headers]) {
+        Ok(value) => value,
+        Err(_) => {
+            return Err((
+                "400 Bad Request",
+                "{\"error\":{\"message\":\"invalid Transfer-Encoding\"}}",
+            ));
+        }
+    };
+    if request_content_length.is_some_and(|length| length > MAX_BODY) {
+        return Err((
+            "413 Payload Too Large",
+            "{\"error\":{\"message\":\"request body exceeds the 16 MiB limit\"}}",
+        ));
+    }
+    if request_content_length.is_some() && chunked_request {
+        return Err((
+            "400 Bad Request",
+            "{\"error\":{\"message\":\"ambiguous request framing\"}}",
+        ));
+    }
+    Ok((request_content_length, chunked_request))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_connection(
     mut client: TcpStream,
@@ -3490,135 +3768,40 @@ fn handle_connection(
         }
     };
     let (method, path) = request_line(&initial);
-    let initial_text = String::from_utf8_lossy(&initial);
-    if !valid_request_line(initial_text.lines().next().unwrap_or("")) {
+    if !valid_request_line(String::from_utf8_lossy(&initial).lines().next().unwrap_or("")) {
         let mut c = client;
         let _ = refuse(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"invalid request line\"}}", None, &initial);
         return;
     }
 
-    // Browser-facing gates, ahead of every other decision including auth, so
-    // a rebound or drive-by request is refused before it can read a status,
-    // move the preferred backend, or reach an inference backend. See the note
-    // above `host_served` for why both controls are needed.
+    let peer = client.peer_addr().unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
     let allowed_origins = allow_list_env("LOOP_STUDIO_ALLOWED_ORIGINS");
-    let request_origin = first_header(&initial, "origin");
-    // The verdict is reused for this connection's CORS block, so a refused
-    // origin gets a 403 with no CORS headers: the page that provoked it
-    // cannot read the refusal either.
-    let cors = cors_origin(request_origin.as_deref(), &allowed_origins);
-    if request_origin.is_some() && cors.is_none() {
-        let mut c = client;
-        let _ = refuse(&mut c, "403 Forbidden", ORIGIN_FORBIDDEN, None, &initial);
-        eprintln!(
-            "[loop-studio-router rid={}] {} {} -> 403 origin not allowed",
-            rid_n, method, path
-        );
-        return;
-    }
-    // The gate above cannot see a drive-by request, because the one shape that
-    // mutates state is the one shape that carries no `Origin`. Per Fetch §4.1 a
-    // `mode: "no-cors"` GET subresource load — `<img>`, `<link>`, `<video>` —
-    // is not a CORS request, so no preflight is sent and no `Origin` is
-    // appended. That is exactly `<img src="http://127.0.0.1:8000/lac/switch?...">`,
-    // and `handle_lac_switch` persists its answer, so a page the operator
-    // merely visited can repoint the gateway at a lane that is not running and
-    // keep that choice across restarts. Reads are not at risk — they can only
-    // be read by a script that already passed the origin gate — so this is
-    // scoped to the endpoint that writes.
-    //
-    // `Sec-Fetch-Site` is the signal `Origin` cannot carry here, and it is
-    // appended by the browser on *every* request, no-cors subresource loads
-    // included. It costs nothing for the callers this must not break: curl,
-    // `lac`, and the TUI all send neither header, and a same-origin fetch from
-    // the operator's own dashboard sends `same-origin`. Only a request the
-    // browser attributes to another site is refused.
-    let cross_site = first_header(&initial, "sec-fetch-site")
-        .map(|v| v.trim().eq_ignore_ascii_case("cross-site"))
-        .unwrap_or(false);
-    if cross_site && (path.starts_with("/loop-studio/switch") || path.starts_with("/lac/switch")) {
-        let mut c = client;
-        let _ = refuse(&mut c, "403 Forbidden", ORIGIN_FORBIDDEN, None, &initial);
-        eprintln!(
-            "[loop-studio-router rid={}] {} {} -> 403 cross-site fetch on a mutating endpoint",
-            rid_n, method, path
-        );
-        return;
-    }
-    // The token verdict is computed once, here: the Host gate needs it as
-    // proof that this is not a browser, and the auth gate below reuses it.
-    let token_ok = !expected_token.is_empty()
-        && bearer_from(&initial)
-            .map(|t| constant_time_eq(&t, &expected_token))
-            .unwrap_or(false);
-    if !host_served(
-        first_header(&initial, "host").as_deref(),
-        token_ok,
-        &allow_list_env("LOOP_STUDIO_ALLOWED_HOSTS"),
+    let allowed_hosts = allow_list_env("LOOP_STUDIO_ALLOWED_HOSTS");
+    let (token_ok, cors) = match check_auth(
+        &mut client,
+        &initial,
+        &peer,
+        &expected_token,
+        &allowed_hosts,
+        &allowed_origins,
+        &method,
+        &path,
+        rid_n,
     ) {
-        let mut c = client;
-        let _ = refuse(&mut c, "421 Misdirected Request", HOST_MISDIRECTED, cors.as_deref(), &initial);
-        eprintln!(
-            "[loop-studio-router rid={}] {} {} -> 421 host not served",
-            rid_n, method, path
-        );
-        return;
-    }
-    if method == "OPTIONS" {
-        // Answered before the auth gate on purpose: a CORS preflight never
-        // carries credentials, so demanding one would just break browsers.
-        // The reply is a static 204 with no backend contact, so it leaks
-        // nothing about this deployment.
-        let _ = handle_options(client, cors.as_deref());
-        return;
-    }
-
-    // Remote Bearer gate: loopback is token-less; any non-loopback peer
-    // without the exact token gets 401 and is never routed nor status-read.
-    let peer_loopback = client
-        .peer_addr()
-        .map(|a| is_loopback_peer(&a))
-        .unwrap_or(false);
-    let proxy_forwarded = forwarded_request(&initial);
-    let auth_required = !peer_loopback || proxy_forwarded || !expected_token.is_empty();
-    if auth_required && !token_ok {
-        let mut c = client;
-        drain_refused_body(&mut c, &initial);
-        let _ = unauthorized(&mut c, cors.as_deref());
-        eprintln!("[loop-studio-router rid={}] {} {} -> 401 remote-auth", rid_n, method, path);
-        return;
-    }
+        Some(pair) => pair,
+        None => return,
+    };
+    let _ = token_ok; // used inside check_auth; returned for potential future use
 
     let initial_headers = find_headers_end(&initial).unwrap_or(initial.len());
-    let request_content_length = match parse_content_length_strict(&initial[..initial_headers]) {
-        Ok(value) => value,
-        Err(_) => {
-            let mut c = client;
-            let _ = refuse(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"invalid request header\"}}", cors.as_deref(), &initial);
-            return;
-        }
-    };
-    let chunked_request = match has_chunked_transfer_encoding(&initial[..initial_headers]) {
-        Ok(value) => value,
-        Err(_) => {
-            let mut c = client;
-            let _ = refuse(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"invalid Transfer-Encoding\"}}", cors.as_deref(), &initial);
-            return;
-        }
-    };
-    if request_content_length.is_some_and(|length| length > MAX_BODY) {
-        let mut c = client;
-        // A declared length past the ceiling is refused before a byte is read,
-        // which is exactly the case with the most body still in flight — so it
-        // is the one most in need of the drain.
-        let _ = refuse(&mut c, "413 Payload Too Large", "{\"error\":{\"message\":\"request body exceeds the 16 MiB limit\"}}", cors.as_deref(), &initial);
-        return;
-    }
-    if request_content_length.is_some() && chunked_request {
-        let mut c = client;
-        let _ = refuse(&mut c, "400 Bad Request", "{\"error\":{\"message\":\"ambiguous request framing\"}}", cors.as_deref(), &initial);
-        return;
-    }
+    let (request_content_length, chunked_request) =
+        match validate_request_framing(&initial, initial_headers) {
+            Ok(pair) => pair,
+            Err((status, body)) => {
+                let _ = refuse(&mut client, status, body, cors.as_deref(), &initial);
+                return;
+            }
+        };
     if request_content_length.is_none()
         && !chunked_request
         && !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS")
@@ -3628,46 +3811,24 @@ fn handle_connection(
         return;
     }
 
-    // The `/lac/*` paths are the pre-rename names, kept working so an
-    // operator's existing scripts and dashboards do not break on the day the
-    // project was renamed. The canonical paths are the `/loop-studio/*` ones.
-    if path == "/loop-studio/status"
-        || path == "/loop-studio/health"
-        || path == "/lac/status"
-        || path == "/lac/health"
-        || path == "/v1/status"
-        || path == "/v1/health"
-    {
-        let _ = handle_lac_status(
-            client,
-            preferred.load(Ordering::SeqCst),
-            &hc,
-            &stats,
-            &routes,
-            &host_facts,
-            started,
-            n,
-            cors.as_deref(),
-        );
-        return;
-    }
-
-    if path.starts_with("/loop-studio/switch") || path.starts_with("/lac/switch") {
-        let _ = handle_lac_switch(client, &path, &preferred, cors.as_deref());
-        return;
-    }
-
-    // Smart endpoint: aggregate model catalogs so OpenCode's picker sees
-    // every live backend at once.
-    if method == "GET" && (path == "/v1/models" || path.starts_with("/v1/models?")) {
-        if let Some(body) = merged_models(&hc, &routes, &catalog) {
-            let mut c = client;
-            let _ = json_response(&mut c, "200 OK", &body, cors.as_deref());
-            eprintln!("[loop-studio-router rid={}] GET /v1/models -> merged ({} bytes)", rid_n, body.len());
-            return;
-        }
-        // else: fall through to single-backend forward.
-    }
+    let mut client = match dispatch_internal(
+        client,
+        &method,
+        &path,
+        &preferred,
+        &hc,
+        &stats,
+        &routes,
+        &host_facts,
+        &catalog,
+        started,
+        n,
+        rid_n,
+        cors.as_deref(),
+    ) {
+        Some(c) => c,
+        None => return,
+    };
 
     let pref = preferred.load(Ordering::SeqCst);
     if pick_backends(pref, &hc, &stats, None).is_empty() {
@@ -3751,13 +3912,46 @@ fn handle_connection(
         return;
     }
 
-    let header_len = find_headers_end(&initial).unwrap_or(initial.len());
+    proxy_request(
+        client,
+        &candidates,
+        &initial,
+        &method,
+        &path,
+        pref,
+        &model,
+        &stats,
+        cors.as_deref(),
+        rid_n,
+    );
+}
+
+/// Drive the proxy retry loop for one request: try each candidate backend in
+/// order, log the outcome, and write a final 502 if none answered usably.
+///
+/// Extracted from `handle_connection` so that function can stay under 150
+/// lines while keeping all the per-attempt accounting and error handling in one
+/// place.
+#[allow(clippy::too_many_arguments)]
+fn proxy_request(
+    client: TcpStream,
+    candidates: &[(Backend, u16)],
+    initial: &[u8],
+    method: &str,
+    path: &str,
+    pref: usize,
+    model: &str,
+    stats: &StatsMap,
+    cors: Option<&str>,
+    rid_n: usize,
+) {
+    let header_len = find_headers_end(initial).unwrap_or(initial.len());
     let t0 = Instant::now();
     let mut tried: Vec<u16> = Vec::new();
     // Backends that answered but were unusable. Without this the 502 blames
     // refused connections even when every backend replied 500 or malformed.
     let mut answered: Vec<String> = Vec::new();
-    for (bid, port) in candidates {
+    for (bid, port) in candidates.iter().copied() {
         // One accounting decision per attempt, before any arm can return:
         // `attempt` is this attempt's 0-based index, and the client's request
         // body is charged on the first attempt only. Every arm below logs
@@ -3765,16 +3959,16 @@ fn handle_connection(
         let attempt = tried.len() as u32;
         let body_len = initial.len().saturating_sub(header_len) as u64;
         let charged = attempt_charge(attempt, body_len);
-        match try_forward(&client, port, &initial, method == "HEAD") {
+        match try_forward(&client, port, initial, method == "HEAD") {
             Ok((up, down, ttfb)) => {
                 let est = (charged + down) / 4;
-                let ms = ttfb.unwrap_or_else(|| ewma_of(&stats, port).min(30_000.0));
-                note_success(&stats, port, ms, up.saturating_sub(header_len as u64), charged, down);
+                let ms = ttfb.unwrap_or_else(|| ewma_of(stats, port).min(30_000.0));
+                note_success(stats, port, ms, up.saturating_sub(header_len as u64), charged, down);
                 log_usage(
                     rid_n,
                     backend_name(bid),
                     port,
-                    &model,
+                    model,
                     charged,
                     down,
                     est,
@@ -3797,7 +3991,7 @@ fn handle_connection(
                 return;
             }
             Err(ForwardError::Connect) => {
-                note_error(&stats, port);
+                note_error(stats, port);
                 tried.push(port);
                 // Log it too: a backend that is not listening is the most
                 // common outage there is, and the usage log is where an
@@ -3807,7 +4001,7 @@ fn handle_connection(
                     rid_n,
                     backend_name(bid),
                     port,
-                    &model,
+                    model,
                     charged,
                     0,
                     charged / 4,
@@ -3818,14 +4012,14 @@ fn handle_connection(
                 continue;
             }
             Err(ForwardError::HttpStatus { status, ttfb }) => {
-                note_error(&stats, port);
+                note_error(stats, port);
                 tried.push(port);
                 answered.push(format!("{} http {}", backend_name(bid), status));
                 log_usage(
                     rid_n,
                     backend_name(bid),
                     port,
-                    &model,
+                    model,
                     charged,
                     0,
                     charged / 4,
@@ -3845,7 +4039,7 @@ fn handle_connection(
                     rid_n,
                     backend_name(bid),
                     port,
-                    &model,
+                    model,
                     charged,
                     0,
                     charged / 4,
@@ -3858,19 +4052,19 @@ fn handle_connection(
                     &mut c,
                     "501 Not Implemented",
                     "{\"error\":{\"message\":\"upstream protocol upgrades are not supported\"}}",
-                    cors.as_deref(),
+                    cors,
                 );
                 return;
             }
             Err(ForwardError::BadResponse { down, ttfb }) => {
-                note_error(&stats, port);
+                note_error(stats, port);
                 tried.push(port);
                 answered.push(format!("{} invalid-response", backend_name(bid)));
                 log_usage(
                     rid_n,
                     backend_name(bid),
                     port,
-                    &model,
+                    model,
                     charged,
                     down,
                     (charged + down) / 4,
@@ -3889,7 +4083,7 @@ fn handle_connection(
                     rid_n,
                     backend_name(bid),
                     port,
-                    &model,
+                    model,
                     charged,
                     down,
                     (charged + down) / 4,
@@ -3905,12 +4099,12 @@ fn handle_connection(
                 // backend that dies after the headers must not keep
                 // receiving traffic just because it still accepts
                 // connections.
-                note_error(&stats, port);
+                note_error(stats, port);
                 log_usage(
                     rid_n,
                     backend_name(bid),
                     port,
-                    &model,
+                    model,
                     charged,
                     down,
                     (charged + down) / 4,
@@ -3931,12 +4125,12 @@ fn handle_connection(
                 return;
             }
             Err(ForwardError::Stream { down, ttfb }) => {
-                note_error(&stats, port);
+                note_error(stats, port);
                 log_usage(
                     rid_n,
                     backend_name(bid),
                     port,
-                    &model,
+                    model,
                     charged,
                     down,
                     (charged + down) / 4,
@@ -3960,7 +4154,7 @@ fn handle_connection(
     }
     let err_body = format!(
         "{{\"error\":{{\"message\":\"No Loop Studio backend could serve this request (preferred {}; tried {:?}{}). Start one with `loop-studio serve mlx`.\",\"type\":\"lac_router_error\",\"code\":502}}}}",
-        common::json_escape(backend_name(pref)),
+        common::json_escape(backend_label(pref)),
         tried,
         if answered.is_empty() {
             String::new()
@@ -3969,7 +4163,7 @@ fn handle_connection(
         }
     );
     let mut c = client;
-    let _ = json_response(&mut c, "502 Bad Gateway", &err_body, cors.as_deref());
+    let _ = json_response(&mut c, "502 Bad Gateway", &err_body, cors);
     eprintln!(
         "[loop-studio-router rid={}] {} {} -> 502 no-backend-served ({:.1}s)",
         rid_n,
@@ -4169,7 +4363,7 @@ fn main() {
     );
     eprintln!(
         "  Preferred backend: {} (LOOP_STUDIO_BACKEND env > ~/.lac/router-backend)",
-        backend_name(preferred.load(Ordering::SeqCst))
+        backend_label(preferred.load(Ordering::SeqCst))
     );
     eprintln!("  Health & metrics: http://{}/loop-studio/status", bound_addr);
     eprintln!(
@@ -4237,10 +4431,10 @@ mod tests {
 
     #[test]
     fn backend_name_roundtrip() {
-        assert_eq!(backend_name(BACKEND_MLX), "mlx");
-        assert_eq!(backend_name(BACKEND_LLAMA), "llama");
-        assert_eq!(backend_name(BACKEND_OLLAMA), "ollama");
-        assert_eq!(backend_name(BACKEND_AUTO), "auto");
+        assert_eq!(backend_name(Backend::Mlx), "mlx");
+        assert_eq!(backend_name(Backend::Llama), "llama");
+        assert_eq!(backend_name(Backend::Ollama), "ollama");
+        assert_eq!(backend_label(BACKEND_AUTO), "auto");
         assert_eq!(backend_id("mlx"), BACKEND_MLX);
         assert_eq!(backend_id("LLAMA"), BACKEND_LLAMA);
         assert_eq!(backend_id("bogus"), BACKEND_AUTO);
@@ -4355,16 +4549,16 @@ mod tests {
     #[test]
     fn an_ordering_target_reports_no_port() {
         for id in [BACKEND_FASTEST, BACKEND_AUTO] {
-            let is_a_port = matches!(id, BACKEND_MLX | BACKEND_LLAMA | BACKEND_OLLAMA);
+            let is_a_port = Backend::try_from(id).is_ok();
             assert!(
                 !is_a_port,
                 "{} is an ordering, not an addressable backend",
-                backend_name(id)
+                backend_label(id)
             );
         }
         // ...and the three that are addressable do report a real one.
-        for id in [BACKEND_MLX, BACKEND_LLAMA, BACKEND_OLLAMA] {
-            assert!(backend_port(id) > 0, "{} must name a usable port", backend_name(id));
+        for b in [Backend::Mlx, Backend::Llama, Backend::Ollama] {
+            assert!(backend_port(b) > 0, "{} must name a usable port", backend_name(b));
         }
     }
 
