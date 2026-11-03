@@ -3781,6 +3781,7 @@ fn handle_connection(
         return;
     }
 
+    // SAFETY: "0.0.0.0:0" is a constant, valid SocketAddr literal; parse() can never fail here.
     let peer = client.peer_addr().unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
     let allowed_origins = allow_list_env("LOOP_STUDIO_ALLOWED_ORIGINS");
     let allowed_hosts = allow_list_env("LOOP_STUDIO_ALLOWED_HOSTS");
