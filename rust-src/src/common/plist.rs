@@ -8,6 +8,10 @@
 /// across users and checkouts.
 pub fn retarget_launchd_plist(content: &str, home: &str, root: &str, want_bin: &str) -> String {
     let mut out = content.replace("/Users/organic", home);
+    // Also replace the $USER placeholder used in the template files.
+    // launchd does NOT expand shell variables in plist values — the literal
+    // string "/Users/$USER" would be passed as-is to the process environment.
+    out = out.replace("/Users/$USER", home);
     // Replace the first <string> entry (ProgramArguments[0]).
     if let Some(arr) = out.find("<array>") {
         if let Some(s0) = out[arr..].find("<string>") {
@@ -79,6 +83,43 @@ pub fn set_plist_string(content: &str, key: &str, value: &str) -> Option<String>
 mod tests {
     #![deny(dead_code)]
     use super::*;
+
+    #[test]
+    fn plist_retargets_dollar_user_placeholder() {
+        // launchd does not expand $USER — templates must not ship it as-is.
+        let tpl = r#"<dict>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/$USER/dev/work/AI/loop-studio/rust-src/target/release/loop-studio-router</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/$USER/dev/work/AI/loop-studio</string>
+    <key>StandardOutPath</key>
+    <string>/Users/$USER/Library/Logs/loop-studio-router.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/Users/$USER/.cargo/bin:/Users/$USER/.local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>"#;
+        let out = retarget_launchd_plist(
+            tpl,
+            "/Users/bob",
+            "/home/bob/loop-studio",
+            "/Users/bob/.local/bin/loop-studio-router",
+        );
+        assert!(!out.contains("$USER"), "no $USER literals must survive");
+        assert!(
+            out.contains("/Users/bob/.local/bin/loop-studio-router"),
+            "binary set"
+        );
+        assert!(out.contains("/Users/bob/.cargo/bin"), "PATH rewritten");
+        assert!(out.contains("/Users/bob/.local/bin"), "PATH rewritten");
+        assert!(
+            out.contains("/Users/bob/Library/Logs"),
+            "log path rewritten"
+        );
+    }
 
     #[test]
     fn plist_retarget_ports_across_macs() {

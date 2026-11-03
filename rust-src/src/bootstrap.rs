@@ -247,14 +247,42 @@ fn main() {
 
     // 5. mise
     eprintln!("5. Ensuring mise...");
-    match Command::new("mise").arg("--version").output() {
-        Ok(o) if o.status.success() => {
-            eprintln!("   mise: {}", String::from_utf8_lossy(&o.stdout).trim())
+    let mise_path = common::which("mise").unwrap_or_default();
+    if !mise_path.is_empty() {
+        match Command::new("mise").arg("--version").output() {
+            Ok(o) if o.status.success() => {
+                eprintln!("   mise: {}", String::from_utf8_lossy(&o.stdout).trim())
+            }
+            _ => {
+                eprintln!("   mise missing — run: curl https://mise.run | sh");
+                warns += 1;
+            }
         }
-        _ => {
-            eprintln!("   mise missing — run: curl https://mise.run | sh");
-            warns += 1;
+
+        // 5b. Run `mise install` to activate pinned Rust + Python toolchains.
+        // On a fresh machine rustc is only available after this step runs.
+        eprintln!("5b. Running mise install (activating pinned toolchains)...");
+        match Command::new("mise")
+            .arg("install")
+            .current_dir(&root)
+            .output()
+        {
+            Ok(o) if o.status.success() => eprintln!("   mise install: ok"),
+            Ok(o) => {
+                eprintln!(
+                    "   mise install failed: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
+                warns += 1;
+            }
+            Err(e) => {
+                eprintln!("   mise install failed to run: {}", e);
+                warns += 1;
+            }
         }
+    } else {
+        eprintln!("   mise missing — run: curl https://mise.run | sh");
+        warns += 1;
     }
 
     // 6. Model library dirs — mount-gated, never shadow /Volumes.

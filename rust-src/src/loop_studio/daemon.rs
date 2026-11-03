@@ -61,10 +61,17 @@ pub fn run_pull_command(command: &mut Command) -> i32 {
 
 pub fn cmd_pull(_root: &str, args: &[String]) -> i32 {
     install_pull_signal_handler();
-    let model = args.first().map(|s| s.trim()).filter(|s| !s.is_empty()).unwrap_or("qwen3.8-27b");
+    let model = args
+        .first()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("qwen3.8-27b");
     println!("=== Loop Studio Model Pull: {} ===", model);
 
-    let is_hf = model.contains('/') || model.starts_with("mlx-") || model.contains("MLX") || model.ends_with(".gguf");
+    let is_hf = model.contains('/')
+        || model.starts_with("mlx-")
+        || model.contains("MLX")
+        || model.ends_with(".gguf");
 
     if is_hf {
         println!("Target is a Hugging Face / MLX repository: {}", model);
@@ -88,7 +95,9 @@ pub fn cmd_pull(_root: &str, args: &[String]) -> i32 {
             }
             return code;
         }
-        eprintln!("Hugging Face CLI not found in PATH; install `brew install hf` before pulling models.");
+        eprintln!(
+            "Hugging Face CLI not found in PATH; install `brew install hf` before pulling models."
+        );
         return 1;
     } else if let Some(ollama) = common::which("ollama") {
         println!("Pulling Ollama model: {}", model);
@@ -189,17 +198,21 @@ pub fn cmd_daemon(root: &str, args: &[String]) {
             }
             let _ = fs::create_dir_all(&log_dir);
             let mut failures = 0usize;
-            for label in ["org.loopstudio.router", "org.loopstudio.worker"] {
+            for label in ["org.loopstudio.router", "org.loopstudio.serve-mlx", "org.loopstudio.worker"] {
                 let src = launchd_src(root, label);
                 let dst = format!("{}/{}.plist", agent_dir, label);
                 match fs::read_to_string(&src) {
                     Ok(content) => {
                         let installed = format!("{}/.local/bin/loop-studio", home);
                         let installed_router = format!("{}/.local/bin/loop-studio-router", home);
+                        let installed_mlx = format!("{}/.local/bin/serve-mlx", home);
                         let release_lac = common::bin(root, "loop-studio");
                         let release_router = common::bin(root, "loop-studio-router");
+                        let release_mlx = common::bin(root, "serve-mlx");
                         let program = if label == "org.loopstudio.router" {
                             common::choose_program_binary(&installed_router, &release_router)
+                        } else if label == "org.loopstudio.serve-mlx" {
+                            common::choose_program_binary(&installed_mlx, &release_mlx)
                         } else {
                             common::choose_program_binary(&installed, &release_lac)
                         };
@@ -212,7 +225,8 @@ pub fn cmd_daemon(root: &str, args: &[String]) {
                             continue;
                         }
                         let want_bin = program.path;
-                        let mut out = common::retarget_launchd_plist(&content, &home, root, &want_bin);
+                        let mut out =
+                            common::retarget_launchd_plist(&content, &home, root, &want_bin);
                         if label == "org.loopstudio.router" {
                             let port = common::gateway_port().to_string();
                             match common::set_plist_string(&out, "LOOP_STUDIO_ROUTER_PORT", &port) {
@@ -227,6 +241,24 @@ pub fn cmd_daemon(root: &str, args: &[String]) {
                                 }
                             }
                         }
+                        if label == "org.loopstudio.serve-mlx" {
+                            // Retarget HF_HOME to the actual model library path.
+                            // Without this the serve-mlx daemon uses a stale
+                            // /Volumes/AIModels path on machines without the external volume.
+                            let model_base = common::model_base();
+                            let hf_home = format!("{}/hf", model_base);
+                            let hf_hub = format!("{}/hf/hub", model_base);
+                            if let Some(r) = common::set_plist_string(&out, "HF_HOME", &hf_home) {
+                                out = r;
+                            } else {
+                                eprintln!("  [!] {} has no HF_HOME key — skipping retarget", src);
+                            }
+                            if let Some(r) = common::set_plist_string(&out, "HF_HUB_CACHE", &hf_hub) {
+                                out = r;
+                            } else {
+                                eprintln!("  [!] {} has no HF_HUB_CACHE key — skipping retarget", src);
+                            }
+                        }
                         match common::atomic_write(&dst, &out) {
                             Ok(()) => println!("  [ok] Placed: {}", dst),
                             Err(e) => {
@@ -237,7 +269,10 @@ pub fn cmd_daemon(root: &str, args: &[String]) {
                         }
                         launchctl_bootout(&dst, label);
                         if !launchctl_bootstrap(&dst) {
-                            eprintln!("  [x] launchctl could not load {} — check `loop-studio logs`", dst);
+                            eprintln!(
+                                "  [x] launchctl could not load {} — check `loop-studio logs`",
+                                dst
+                            );
                             failures += 1;
                         }
                     }
@@ -249,6 +284,7 @@ pub fn cmd_daemon(root: &str, args: &[String]) {
             }
             println!("Worker log: ~/Library/Logs/loop-studio-worker.log");
             println!("Router log: ~/Library/Logs/loop-studio-router.log");
+            println!("MLX log:    ~/Library/Logs/loop-studio-serve-mlx.log");
             if failures > 0 {
                 eprintln!("  [x] {} agent(s) did not install cleanly", failures);
                 std::process::exit(1);
@@ -257,12 +293,10 @@ pub fn cmd_daemon(root: &str, args: &[String]) {
         "uninstall" => {
             println!("Unloading Loop Studio 24/7 Daemons...");
             let mut failures = 0;
-            for label in ["org.loopstudio.worker", "org.loopstudio.router"] {
+            for label in ["org.loopstudio.worker", "org.loopstudio.serve-mlx", "org.loopstudio.router"] {
                 let dst = format!("{}/{}.plist", agent_dir, label);
                 if !launchctl_bootout(&dst, label) {
-                    eprintln!(
-                        "  [x] launchctl could not unload {label} — it may still be running"
-                    );
+                    eprintln!("  [x] launchctl could not unload {label} — it may still be running");
                     failures += 1;
                 }
                 match fs::remove_file(&dst) {
@@ -289,15 +323,23 @@ pub fn cmd_daemon(root: &str, args: &[String]) {
                 .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
                 .unwrap_or_default();
-            for label in ["org.loopstudio.router", "org.loopstudio.worker"] {
+            for label in ["org.loopstudio.router", "org.loopstudio.serve-mlx", "org.loopstudio.worker"] {
                 let running = out.lines().any(|l| l.contains(label));
                 let plist = format!("{}/{}.plist", agent_dir, label);
                 let placed = fs::metadata(&plist).is_ok();
                 println!(
                     "  - {} : {} ({})",
                     label,
-                    if running { "ACTIVE (running)" } else { "NOT LOADED" },
-                    if placed { "plist placed" } else { "plist absent" }
+                    if running {
+                        "ACTIVE (running)"
+                    } else {
+                        "NOT LOADED"
+                    },
+                    if placed {
+                        "plist placed"
+                    } else {
+                        "plist absent"
+                    }
                 );
             }
             println!("----------------------------------------------------------------");
@@ -305,7 +347,10 @@ pub fn cmd_daemon(root: &str, args: &[String]) {
             println!("  Router: ~/Library/Logs/loop-studio-router.log");
             println!("================================================================");
         }
-        _ => println!("Unknown daemon command: {}. Use: install, uninstall, status", sub),
+        _ => println!(
+            "Unknown daemon command: {}. Use: install, uninstall, status",
+            sub
+        ),
     }
 }
 

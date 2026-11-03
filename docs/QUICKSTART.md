@@ -10,34 +10,45 @@ The primary model throughout this build is **`qwen3.8-27b`** — the Qwen3.8-27B
 VLM released Aug 14 2026 (27.78B params, 64 layers, 262K native / 1M YaRN, MTP head).
 It is the better model per your preference, replacing the older `qwen3-coder`.
 
-## 1. Initial arrival / day-one setup (Mac Studio)
+## 1. Day-One Setup (Mac Studio — first run)
 
 ```bash
-# Clone & enter
-git clone <repo-url> ~/dev/work/AI/loop-studio
+# 1. Install Homebrew (if not already installed)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# 2. Clone the repo
+git clone https://github.com/organicnz/loop-studio ~/dev/work/AI/loop-studio
 cd ~/dev/work/AI/loop-studio
 
-# Install system dependencies (one-time)
-brew bundle install          # ollama, llama.cpp, mlx-lm, uv, mise, lefthook, ghostty
-mise install                 # Rust 1.98.0 + uv (Python managed by brew, not mise)
+# 3. Install all system tools (ollama, mlx-lm, llama.cpp, mise, uv, lefthook, ghostty…)
+brew bundle install
 
-# Build all Rust binaries (~4s on Apple Silicon)
-make build                   # cargo build --release → rust-src/target/release/
+# 4. Activate pinned Rust toolchain and Python (~4s — required before make build)
+mise install
 
-# Install to PATH
-make install                 # copies all 8 binaries to ~/.local/bin
+# 5. Build all 8 Rust binaries (~4s on Apple Silicon)
+make build
 
-# Verify stack (no inference server needed for this)
-loop-studio doctor           # full diagnostics
-loop-studio status           # real-time telemetry
+# 6. Install binaries to ~/.local/bin (adds to PATH via ~/.zprofile)
+make install
 
-# Option A — Unified CLI (fastest & recommended)
-./rust-src/target/release/loop-studio doctor     # Verify stack integrity
-./rust-src/target/release/loop-studio status     # Real-time telemetry
+# 7. Idempotent machine setup (dirs, ollama symlink, zprofile hooks, TM exclusions)
+loop-studio bootstrap
 
-# Option B — Loop Studio (Native Apple Silicon macOS Liquid Glass Desktop App)
-make app                     # build + package Loop Studio.app
-open "SwiftUI/.build/Loop Studio.app"
+# 8. Start Ollama, then pull the primary model (~16 GB, 10-40 min)
+brew services start ollama
+loop-studio pull-models      # pulls qwen3.8-27b
+
+# 9. Install as persistent launchd daemons (router + serve-mlx + worker, KeepAlive)
+make daemon-install
+
+# 10. Verify — inference ports will be down until launchd loads them (log out/in or reboot)
+loop-studio doctor
+```
+
+After `daemon-install` the router (:8000), MLX server (:8080), and worker start automatically on login and restart after crashes. No manual `loop-studio serve` needed.
+
+
 # Features Claude/Codex ergonomics, Code Assistant split canvas (⌘2), live Hugging Face Model Hub, and Ops telemetry
 
 # Option C — Code Assistant from CLI (Instant single-shot or piped refactoring)

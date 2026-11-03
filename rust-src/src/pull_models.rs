@@ -18,6 +18,22 @@ fn main() {
         eprintln!("{}", note);
     }
 
+    // Preflight: ollama daemon must be running before pull.
+    // The binary check below would pass even if the daemon is stopped.
+    match Command::new("ollama").arg("list").output() {
+        Err(e) => {
+            eprintln!("ollama is not in PATH or not responding: {}", e);
+            eprintln!("Start it first: brew services start ollama");
+            std::process::exit(1);
+        }
+        Ok(o) if !o.status.success() => {
+            eprintln!("ollama daemon is not running (ollama list returned non-zero)");
+            eprintln!("Start it: brew services start ollama");
+            std::process::exit(1);
+        }
+        Ok(_) => {}
+    }
+
     if let Some(p) = common::which("ollama") {
         if let Ok(o) = Command::new("ollama").arg("--version").output() {
             eprintln!("ollama: {} ({})", String::from_utf8_lossy(&o.stdout).trim(), p);

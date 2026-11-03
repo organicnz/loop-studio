@@ -147,6 +147,10 @@ class ChatStore: ObservableObject {
     var connection: LoopStudioConnectionStore { LoopStudioConnectionStore.shared }
     public var port: Int { connection.port }
 
+    // Incremental stream rendering state — used by applyStreamEvent/finishThinking
+    // and directly by the live streaming path.
+    private var streamIsThinking = false
+
     private var streamTask: Task<Void, Never>?
     private var streamGeneration: UInt64 = 0
     /// What the in-flight stream is writing into, so `cancel()` can finish it
@@ -761,6 +765,49 @@ class ChatStore: ObservableObject {
         streamTask = nil
         streamContext = nil
         isSending = false
+    }
+
+    // MARK: - Testable streaming primitives
+
+    /// Apply one typed event from the gateway stream to `streamText`.
+    /// Mirrors the incremental rendering logic in the live streaming path.
+    func applyStreamEvent(_ event: GatewayEvent) {
+        switch event {
+        case .reasoning(let piece):
+            if !streamIsThinking {
+                streamIsThinking = true
+                streamText += " thinking\n"
+            }
+            streamText += piece
+        case .content(let piece):
+            if streamIsThinking {
+                streamIsThinking = false
+                streamText += "\n</think>\n"
+            }
+            streamText += piece
+        }
+    }
+
+    /// Close an open thinking block. Call after the stream ends if reasoning was received.
+    func finishThinking() {
+        if streamIsThinking {
+            streamIsThinking = false
+            streamText += "\n</think>\n"
+        }
+    }
+
+    /// Map a `GatewayError` to the `ChatError` shown to the user.
+    static func mapGatewayError(_ error: GatewayError) -> Error {
+        switch error {
+        case .http(let code, let detail):
+            return ChatError.http(code, detail)
+        case .transport(let what):
+            return ChatError.transport(what)
+        case .badURL:
+            return ChatError.transport("bad gateway URL")
+        case .malformedResponse(let body):
+            return ChatError.transport("malformed response: \(body)")
+        }
     }
 
     /// Append the buffered stream text to its thread as a real message.
