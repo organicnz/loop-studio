@@ -469,6 +469,13 @@ struct BackendStats {
     req_bytes: u64,
     resp_bytes: u64,
     est_tokens: u64,
+    // Stream-level outcome counters (zero = no data yet).
+    stream_clean: u64,       // ended with [DONE] terminal frame
+    stream_reset: u64,       // backend socket reset mid-stream
+    stream_cut: u64,         // partial stream (StreamCut)
+    stream_client_gone: u64, // client closed connection
+    stream_budget: u64,      // router body-budget exhausted
+    stream_bad_resp: u64,    // malformed SSE frame
 }
 
 type StatsMap = Arc<Mutex<HashMap<u16, BackendStats>>>;
@@ -753,6 +760,24 @@ fn note_error(stats: &StatsMap, port: u16) {
         s.err += 1;
         s.consec_err += 1;
         s.last_err = Some(Instant::now());
+    }
+}
+
+/// Record a stream-level outcome separate from the connection-level ok/err.
+/// Six distinguishable endings that map directly to the ForwardError variants
+/// plus the clean-[DONE] case. Called from proxy_request after log_usage.
+fn note_stream_outcome(stats: &StatsMap, port: u16, outcome: &str) {
+    if let Ok(mut m) = stats.lock() {
+        let s = m.entry(port).or_default();
+        match outcome {
+            "proxied" => s.stream_clean += 1,
+            "stream-broke" => s.stream_reset += 1,
+            "stream-cut" => s.stream_cut += 1,
+            "client-gone" => s.stream_client_gone += 1,
+            "bad-response" => s.stream_bad_resp += 1,
+            // body-budget, unsupported-upgrade, http-error → budget/infra
+            _ => s.stream_budget += 1,
+        }
     }
 }
 
@@ -1777,23 +1802,26 @@ fn handle_lac_status(
     // Measured per-backend stats (zeros when nothing proxied yet).
     let mut stats_json = String::from("{");
     for (i, (bid, port)) in tier_backends().iter().enumerate() {
-        let (ewma, ok, err, toks) = stats
+        let (ewma, ok, err, toks, sc, sr, scut, scg, sbud, sbad) = stats
             .lock()
             .ok()
             .and_then(|m| m.get(port).cloned())
-            .map(|s| (s.ewma_ms, s.ok, s.err, s.est_tokens))
-            .unwrap_or((None, 0, 0, 0));
+            .map(|s| (s.ewma_ms, s.ok, s.err, s.est_tokens,
+                      s.stream_clean, s.stream_reset, s.stream_cut,
+                      s.stream_client_gone, s.stream_budget, s.stream_bad_resp))
+            .unwrap_or((None, 0, 0, 0, 0, 0, 0, 0, 0, 0));
         if i > 0 {
             stats_json.push(',');
         }
         stats_json.push_str(&format!(
-            "\"{}\":{{\"port\":{},\"ewma_ms\":{},\"ok\":{},\"err\":{},\"est_tokens\":{}}}",
+            "\"{}\":{{\"port\":{},\"ewma_ms\":{},\"ok\":{},\"err\":{},\"est_tokens\":{},\"stream\":{{\"clean\":{},\"reset\":{},\"cut\":{},\"client_gone\":{},\"budget\":{},\"bad_resp\":{}}}}}",
             backend_name(*bid),
             port,
             ewma.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "null".to_string()),
             ok,
             err,
             toks,
+            sc, sr, scut, scg, sbud, sbad,
         ));
     }
     stats_json.push('}');
@@ -3984,6 +4012,7 @@ fn proxy_request(
                     "proxied",
                     attempt,
                 );
+                note_stream_outcome(stats, port, "proxied");
                 eprintln!(
                     "[loop-studio-router rid={}] {} {} -> {} (:{} up={} down={} ttfb={} {:.1}s)",
                     rid_n,
@@ -4017,6 +4046,7 @@ fn proxy_request(
                     "unreachable",
                     attempt,
                 );
+                note_stream_outcome(stats, port, "unreachable");
                 continue;
             }
             Err(ForwardError::HttpStatus { status, ttfb }) => {
@@ -4035,6 +4065,7 @@ fn proxy_request(
                     "http-error",
                     attempt,
                 );
+                note_stream_outcome(stats, port, "http-error");
                 eprintln!(
                     "[loop-studio-router rid={}] {} {} -> backend HTTP {}; trying next",
                     rid_n, method, path, status
@@ -4055,6 +4086,7 @@ fn proxy_request(
                     "unsupported-upgrade",
                     attempt,
                 );
+                note_stream_outcome(stats, port, "unsupported-upgrade");
                 let mut c = client;
                 let _ = json_response(
                     &mut c,
@@ -4080,6 +4112,7 @@ fn proxy_request(
                     "bad-response",
                     attempt,
                 );
+                note_stream_outcome(stats, port, "bad-response");
                 eprintln!(
                     "[loop-studio-router rid={}] {} {} -> :{} invalid-response; trying next",
                     rid_n, method, path, port
@@ -4099,6 +4132,7 @@ fn proxy_request(
                     "client-gone",
                     attempt,
                 );
+                note_stream_outcome(stats, port, "client-gone");
                 return;
             }
             Err(ForwardError::StreamCut { down, ttfb }) => {
@@ -4120,6 +4154,7 @@ fn proxy_request(
                     "stream-cut",
                     attempt,
                 );
+                note_stream_outcome(stats, port, "stream-cut");
                 eprintln!(
                     "[loop-studio-router rid={}] {} {} -> :{} stream-cut (up={} down={} {:.1}s)",
                     rid_n,
@@ -4146,6 +4181,7 @@ fn proxy_request(
                     "stream-broke",
                     attempt,
                 );
+                note_stream_outcome(stats, port, "stream-broke");
                 eprintln!(
                     "[loop-studio-router rid={}] {} {} -> :{} stream-broke (up={} down={} {:.1}s)",
                     rid_n,
