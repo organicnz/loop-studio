@@ -1,0 +1,71 @@
+# This file controls the behavior of Trunk: https://docs.trunk.io/cli
+# To learn more about the format of this file, see https://docs.trunk.io/reference/trunk-yaml
+#
+# Runtime policy: NO node, NO python, NO go runtime. Pure Rust binaries or
+#   Go static binaries (downloaded pre-compiled, no Go runtime needed).
+#   markdownlint  → rumdl     (Rust, zero-dep binary, 97% rule-parity)
+#   prettier      → removed (was biome/Node; taplo handles TOML, rumdl --fix handles MD)
+#   yamllint      → yamlfmt   (Go static binary, no runtime)
+#   checkov       → trivy     (Go static binary, IaC + vuln scanning)
+#   biome         → removed (required Node runtime)
+#   zizmor        → removed (required Python/PyPI runtime)
+#   pinact        → removed (required Python wrapper)
+version: 0.1
+cli:
+  version: 1.25.0
+# Trunk provides extensibility via plugins. (https://docs.trunk.io/plugins)
+plugins:
+  sources:
+    - id: trunk
+      ref: v1.11.0
+      uri: https://github.com/trunk-io/plugins
+# Runtimes block removed — all enabled tools are Rust binaries or Go static
+# binaries that trunk downloads pre-compiled. No runtimes are installed.
+# Disabled tools (biome, zizmor, pinact) required node/python and were removed.
+# This is the section where you manage your linters. (https://docs.trunk.io/check/configuration)
+lint:
+  enabled:
+    # — Rust source ————————————————————————————————
+    - dustilock@1.2.0
+    - clippy@1.65.0
+    - rustfmt@1.65.0
+    # — Markdown (Rust binary, replaces markdownlint + prettier/MD) ——
+    - rumdl@0.3.2
+    # — TOML (Rust binary) ————————————————————————
+    - taplo@0.10.0
+    # — YAML (Go static binary, replaces yamllint + prettier/YAML) ———
+    - yamlfmt@0.20.0
+    # — Shell —————————————————————————————————————
+    - shellcheck@0.11.0
+    - shfmt@3.14.1
+    # — GitHub Actions ————————————————————————————
+    - actionlint@1.7.12
+    # pinact removed: required python runtime
+    # — Security / supply-chain ———————————————————
+    - trivy@0.70.0 # IaC misconfig (replaces checkov); skip v0.69.4–v0.69.6 (CVE-2026-33634)
+    - grype@0.121.1 # container / lockfile CVE scan
+    - osv-scanner@2.7.0 # OSV vulnerability database
+    - trufflehog@3.99.8 # secret scanning
+    # — Images ————————————————————————————————————
+    - oxipng@10.2.1
+    # — Repo hygiene ——————————————————————————————
+    - git-diff-check
+  disabled:
+    # Removed: required node runtime
+    - markdownlint
+    - prettier
+    - biome
+    # Removed: required python runtime
+    - yamllint
+    - checkov
+    - zizmor
+    - pinact
+actions:
+  disabled:
+    - trunk-announce
+    - trunk-check-pre-push
+    - trunk-fmt-pre-commit
+  enabled:
+    - trunk-upgrade-available
+# No runtimes block — all remaining enabled tools are Rust binaries or
+# Go static binaries that trunk downloads pre-compiled.
