@@ -16,6 +16,11 @@ pub(crate) const THERMAL_PROBE: [&str; 2] = ["-g", "therm"];
 /// Raw `pmset -g therm` output. Empty when pmset could not be run or failed —
 /// which is a host that cannot answer, not a machine reading Nominal.
 pub fn thermal_detail() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        return linux_thermal_detail();
+    }
+    #[cfg(not(target_os = "linux"))]
     Command::new("pmset")
         .args(THERMAL_PROBE)
         .output()
@@ -38,12 +43,91 @@ pub fn thermal_detail() -> String {
 /// too, hiding the throttle warning that precedes Critical by minutes; an
 /// absent reading is the same failure one level up.
 pub fn thermal_state() -> Option<String> {
-    let out = Command::new("pmset").args(THERMAL_PROBE).output().ok()?;
-    if !out.status.success() {
-        return None;
+    #[cfg(target_os = "linux")]
+    return linux_thermal_state();
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let out = Command::new("pmset").args(THERMAL_PROBE).output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8(out.stdout).ok()?;
+        parse_thermal(&text)
     }
-    let text = String::from_utf8(out.stdout).ok()?;
-    parse_thermal(&text)
+}
+
+/// Linux thermal probe via /sys/class/thermal/thermal_zone*/temp.
+/// Reads the first zone that answers, converts millidegrees to Celsius,
+/// and maps to the same four-level scale as pmset.
+#[cfg(target_os = "linux")]
+fn linux_thermal_state() -> Option<String> {
+    let temp_c = linux_max_temp_c()?;
+    // Same thresholds as parse_thermal (pmset speed-limit mapping):
+    //   Nominal  <  75 °C
+    //   Fair     75–84 °C
+    //   Serious  85–94 °C
+    //   Critical ≥ 95 °C
+    let level = if temp_c >= 95.0 {
+        "Critical"
+    } else if temp_c >= 85.0 {
+        "Serious"
+    } else if temp_c >= 75.0 {
+        "Fair"
+    } else {
+        "Nominal"
+    };
+    Some(level.to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_thermal_detail() -> String {
+    match linux_max_temp_c() {
+        Some(t) => format!("Linux thermal: {:.1}°C ({})\n", t, {
+            if t >= 95.0 {
+                "Critical"
+            } else if t >= 85.0 {
+                "Serious"
+            } else if t >= 75.0 {
+                "Fair"
+            } else {
+                "Nominal"
+            }
+        }),
+        None => String::new(),
+    }
+}
+
+/// Read the highest CPU temperature from /sys/class/thermal/thermal_zone*/temp.
+/// Returns None if no zone could be read.
+#[cfg(target_os = "linux")]
+fn linux_max_temp_c() -> Option<f64> {
+    use std::fs;
+    let mut max: Option<f64> = None;
+    let Ok(dir) = fs::read_dir("/sys/class/thermal") else { return None };
+    for entry in dir.flatten() {
+        let path = entry.path();
+        let name = path.file_name()?.to_string_lossy().to_string();
+        if !name.starts_with("thermal_zone") {
+            continue;
+        }
+        // Only read CPU-class zones; skip GPU/battery/charger where labelled.
+        let type_path = path.join("type");
+        if let Ok(zone_type) = fs::read_to_string(&type_path) {
+            let zt = zone_type.trim().to_lowercase();
+            if zt.contains("battery") || zt.contains("charger") || zt.contains("gpu") {
+                continue;
+            }
+        }
+        let temp_path = path.join("temp");
+        if let Ok(raw) = fs::read_to_string(&temp_path) {
+            if let Ok(millic) = raw.trim().parse::<f64>() {
+                let c = millic / 1000.0;
+                max = Some(max.map_or(c, |m: f64| m.max(c)));
+            }
+        }
+    }
+    max
 }
 
 /// A reading as a word, for lines that print it. An absent probe is named

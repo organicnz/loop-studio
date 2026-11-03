@@ -191,6 +191,13 @@ pub fn cmd_daemon(root: &str, args: &[String]) {
 
     match sub {
         "install" => {
+            // Platform-aware: use launchd on macOS, systemd on Linux.
+            #[cfg(target_os = "linux")]
+            {
+                install_systemd_units(root, &home, &log_dir);
+                return;
+            }
+            #[cfg(not(target_os = "linux"))]
             println!("Installing Loop Studio 24/7 Daemons as macOS LaunchAgents...");
             if let Err(e) = fs::create_dir_all(&agent_dir) {
                 eprintln!("  [x] Cannot create {}: {}", agent_dir, e);
@@ -362,5 +369,89 @@ pub fn exec_sibling(program: String, args: &[String]) -> ! {
             eprintln!("loop-studio: could not run {}: {}", program, e);
             std::process::exit(127);
         }
+    }
+}
+
+// ─────────────────────────────────────────── Linux systemd user units ───────
+
+/// Install Loop Studio as systemd user services on Linux.
+///
+/// Creates `~/.config/systemd/user/loop-studio-{router,worker}.service`
+/// with KeepAlive semantics (Restart=always, RestartSec=10), log routing
+/// to `~/.local/share/loop-studio/logs/`, and the same binary resolution
+/// as the macOS launchd path.
+#[cfg(target_os = "linux")]
+fn install_systemd_units(root: &str, home: &str, _log_dir: &str) {
+    let unit_dir = format!("{}/.config/systemd/user", home);
+    let log_dir = format!("{}/.local/share/loop-studio/logs", home);
+    if let Err(e) = fs::create_dir_all(&unit_dir) {
+        eprintln!("  [x] Cannot create {}: {}", unit_dir, e);
+        std::process::exit(1);
+    }
+    let _ = fs::create_dir_all(&log_dir);
+
+    let installed_router = format!("{}/.local/bin/loop-studio-router", home);
+    let release_router = common::bin(root, "loop-studio-router");
+    let installed = format!("{}/.local/bin/loop-studio", home);
+    let release_lac = common::bin(root, "loop-studio");
+
+    let router_bin = common::choose_program_binary(&installed_router, &release_router);
+    let worker_bin = common::choose_program_binary(&installed, &release_lac);
+
+    let units: &[(&str, &str, String)] = &[
+        (
+            "loop-studio-router",
+            "Loop Studio gateway router on :8000",
+            router_bin.path.clone(),
+        ),
+        (
+            "loop-studio-worker",
+            "Loop Studio autonomous task worker",
+            format!("{} worker", worker_bin.path),
+        ),
+    ];
+
+    let mut failures = 0usize;
+    for (name, desc, exec) in units {
+        let unit = format!(
+            "[Unit]\nDescription={desc}\nAfter=network.target\n\n\
+             [Service]\nType=simple\nExecStart={exec}\nRestart=always\nRestartSec=10\n\
+             StandardOutput=append:{log_dir}/{name}.log\n\
+             StandardError=append:{log_dir}/{name}.err\n\n\
+             [Install]\nWantedBy=default.target\n",
+            desc = desc,
+            exec = exec,
+            log_dir = log_dir,
+            name = name,
+        );
+        let dst = format!("{}/{}.service", unit_dir, name);
+        match common::atomic_write(&dst, &unit) {
+            Ok(()) => println!("  [ok] Placed: {}", dst),
+            Err(e) => {
+                eprintln!("  [x] Write {} failed: {}", dst, e);
+                failures += 1;
+                continue;
+            }
+        }
+        // Enable and start: `systemctl --user daemon-reload && enable --now`
+        let _ = Command::new("systemctl").args(["--user", "daemon-reload"]).status();
+        let ok = Command::new("systemctl")
+            .args(["--user", "enable", "--now", &format!("{}.service", name)])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            eprintln!(
+                "  [x] systemctl could not enable {} — run: systemctl --user daemon-reload",
+                name
+            );
+            failures += 1;
+        }
+    }
+    println!("Router log: {}/loop-studio-router.log", log_dir);
+    println!("Worker log: {}/loop-studio-worker.log", log_dir);
+    if failures > 0 {
+        eprintln!("  [x] {} unit(s) did not install cleanly", failures);
+        std::process::exit(1);
     }
 }

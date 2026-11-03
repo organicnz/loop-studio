@@ -383,6 +383,58 @@ pub fn mlx_supported() -> bool {
     is_apple_silicon()
 }
 
+/// Platform capability summary — single source of truth for what this host
+/// can do. Consulted by doctor, status, serve, and daemon install so every
+/// path that gates on platform reads from one place rather than scattering
+/// `cfg(target_os)` checks.
+pub struct PlatformCapabilities {
+    /// Apple Silicon: MLX lane available, pmset thermal probe available.
+    pub mlx: bool,
+    /// Thermal probe works on this host (pmset on macOS, /sys on Linux).
+    pub thermal_probe: bool,
+    /// Daemon supervisor: "launchd" on macOS, "systemd" on Linux, "none" elsewhere.
+    pub daemon_supervisor: &'static str,
+    /// Shell environment file to write PATH/env hooks into.
+    pub env_file: &'static str,
+    /// Human-readable OS + arch label.
+    pub platform_label: &'static str,
+}
+
+pub fn platform_capabilities() -> PlatformCapabilities {
+    #[cfg(target_os = "macos")]
+    return PlatformCapabilities {
+        mlx: is_apple_silicon(),
+        thermal_probe: true, // pmset always available on macOS
+        daemon_supervisor: "launchd",
+        env_file: "~/.zprofile",
+        platform_label: if is_apple_silicon() {
+            "macOS ARM64 (Apple Silicon)"
+        } else {
+            "macOS x86_64 (Intel)"
+        },
+    };
+    #[cfg(target_os = "linux")]
+    return PlatformCapabilities {
+        mlx: false,
+        thermal_probe: std::path::Path::new("/sys/class/thermal").exists(),
+        daemon_supervisor: "systemd",
+        env_file: "~/.profile",
+        platform_label: if std::env::consts::ARCH == "x86_64" {
+            "Linux x86_64"
+        } else {
+            "Linux aarch64"
+        },
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    PlatformCapabilities {
+        mlx: false,
+        thermal_probe: false,
+        daemon_supervisor: "none",
+        env_file: "~/.profile",
+        platform_label: "Unknown platform",
+    }
+}
+
 // ---------------------------------------------------------------- file tailing --
 
 /// Last `n` lines of a file (trailing newline normalized).
