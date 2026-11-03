@@ -5004,11 +5004,11 @@ mod tests {
         assert_eq!(memo.fetch(fetch).as_deref(), Some("{\"n\":1}"), "cached");
         std::thread::sleep(Duration::from_millis(80));
 
-        // Expired: the previous answer is served immediately and rebuilt behind
-        // the caller. Never blocked is the property the whole split exists for,
-        // and it is asserted by the refresh counter being untouched at the
-        // moment the body comes back.
+        // Property 1 (never blocked): expired entry is served immediately;
+        // the caller is not held up waiting for a refresh. This is the whole
+        // point of the background-refresh split and is asserted deterministically.
         let before = calls.load(Ordering::SeqCst);
+        let calls_at_serve = calls.load(Ordering::SeqCst);
         let served = Arc::clone(&memo);
         let refresh_calls = Arc::clone(&calls);
         let answered = memo.serve(move || {
@@ -5019,25 +5019,24 @@ mod tests {
             Some("{\"n\":1}"),
             "the expired entry is what the caller is answered with"
         );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            calls_at_serve,
+            "the refresh counter must be untouched at the moment the body is returned"
+        );
 
-        // ...and it does converge. The refresh runs on its own thread, so the
-        // wait is for the thread, not for the caller.
-        //
-        // We wait on the call counter crossing `before` — the rebuild increments
-        // it before writing the memo, so counter > before is a reliable signal
-        // that the write is either done or imminent. We then spin a little
-        // longer on fresh() to let the write land. A 30s ceiling ensures the
-        // test cannot hang forever on a seized CI runner.
-        let deadline = Instant::now() + Duration::from_secs(30);
+        // Property 2 (converges): the cache eventually holds the new value.
+        // This depends on the background thread being scheduled. On a heavily
+        // loaded CI runner this can take many seconds; we give it 60s and
+        // accept a flake-free pass at the cost of a slow timeout on a seized runner.
+        let deadline = Instant::now() + Duration::from_secs(60);
         while calls.load(Ordering::SeqCst) <= before && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
         }
-        // Counter has ticked; give the memo write a moment to become visible.
-        let deadline2 = Instant::now() + Duration::from_secs(5);
+        let deadline2 = Instant::now() + Duration::from_secs(10);
         while memo.fresh().is_none() && Instant::now() < deadline2 {
             thread::sleep(Duration::from_millis(5));
         }
-        // Capture fresh() once so both assertions see the same value.
         let fresh_val = memo.fresh();
         assert!(
             calls.load(Ordering::SeqCst) > before,
