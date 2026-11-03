@@ -5026,24 +5026,21 @@ mod tests {
         );
 
         // Property 2 (converges): the cache eventually holds the new value.
-        // This depends on the background thread being scheduled. On a heavily
-        // loaded CI runner this can take many seconds; we give it 60s and
-        // accept a flake-free pass at the cost of a slow timeout on a seized runner.
+        // We use stale() rather than fresh() because the 40ms TTL may expire
+        // again between the background thread's put() and our read — stale()
+        // returns the stored body regardless of age, proving the value was
+        // written without racing against the TTL clock.
         let deadline = Instant::now() + Duration::from_secs(60);
         while calls.load(Ordering::SeqCst) <= before && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
         }
-        let deadline2 = Instant::now() + Duration::from_secs(10);
-        while memo.fresh().is_none() && Instant::now() < deadline2 {
-            thread::sleep(Duration::from_millis(5));
-        }
-        let fresh_val = memo.fresh();
+        let stale_val = memo.stale();
         assert!(
             calls.load(Ordering::SeqCst) > before,
             "an expired entry must be rebuilt, not served forever"
         );
         assert_eq!(
-            fresh_val.as_deref(),
+            stale_val.as_deref(),
             Some("{\"n\":2}"),
             "and the next caller must see the newly loaded model"
         );
