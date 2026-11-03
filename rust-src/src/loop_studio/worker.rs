@@ -69,10 +69,10 @@ fn run_with_timeout_env(
     }
 }
 
-/// Transcripts live under ~/.lac/task-logs/<id>-<unix>.log.
+/// Transcripts live under ~/.loop-studio/task-logs/<id>-<unix>.log.
 pub fn task_log_path(id: &str) -> String {
     format!(
-        "{}/.lac/task-logs/{}-{}.log",
+        "{}/.loop-studio/task-logs/{}-{}.log",
         common::home_dir(),
         id,
         common::now_unix()
@@ -181,13 +181,13 @@ pub fn run_logged_env(
 }
 
 fn worker_current_path_for(suffix: &str) -> String {
-    format!("{}/.lac/worker-current{}", common::home_dir(), suffix)
+    format!("{}/.loop-studio/worker-current{}", common::home_dir(), suffix)
 }
 
 /// Clear stale per-thread markers left by a crash. Returns true when at least
 /// one was found, so the caller can print the preservation notice once.
 fn recover_worker_markers() -> bool {
-    let dir = format!("{}/.lac", common::home_dir());
+    let dir = format!("{}/.loop-studio", common::home_dir());
     let Ok(entries) = fs::read_dir(&dir) else {
         return false;
     };
@@ -625,7 +625,7 @@ pub fn cmd_worker(root: &str, args: &[String]) {
         Some(l) => l,
         None => {
             eprintln!(
-                "Another loop-studio worker holds the lock (~/.lac/locks/loop-studio-worker). Exiting."
+                "Another loop-studio worker holds the lock (~/.loop-studio/locks/loop-studio-worker). Exiting."
             );
             std::process::exit(1);
         }
@@ -653,7 +653,7 @@ pub fn cmd_worker(root: &str, args: &[String]) {
             {
                 Ok(child) => {
                     common::persist_or_warn(
-                        &format!("{}/.lac/router.pid", home),
+                        &format!("{}/.loop-studio/router.pid", home),
                         &child.id().to_string(),
                         "router_pid",
                     );
@@ -889,7 +889,7 @@ fn worker_thread_loop(cfg: &WorkerConfig, shared: &WorkerShared) {
         let branch = format!("task/{}", task.id);
         let worktree_path = find_worktree_for_branch(cfg.root, &branch).unwrap_or_else(|| {
             format!(
-                "{}/.lac/worker-worktrees/{}-a{}-{}-{}",
+                "{}/.loop-studio/worker-worktrees/{}-a{}-{}-{}",
                 cfg.home,
                 task.id,
                 task.attempts + 1,

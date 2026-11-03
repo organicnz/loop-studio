@@ -302,11 +302,11 @@ public class LoopsStore: ObservableObject {
     private var queueLockURL: URL {
         if let tasksWriteURLOverride {
             // Test-only override: a sibling of the queue file, so the test
-            // does not contend with the real lock in ~/.lac/locks.
+            // does not contend with the real lock in ~/.loop-studio/locks.
             return tasksWriteURLOverride.deletingLastPathComponent().appendingPathComponent(".loop-studio-queue.lock")
         }
         return URL(fileURLWithPath: Self.studioHome())
-            .appendingPathComponent(".lac/locks/loop-studio-tasks")
+            .appendingPathComponent(".loop-studio/locks/loop-studio-tasks")
     }
 
     /// The Studio's home, matching `common::home_dir()`: `$HOME` when it is set
@@ -330,7 +330,7 @@ public class LoopsStore: ObservableObject {
     // MARK: - Queue lock
     //
     // The same lock `common::acquire_lock` takes on the Rust side, on the
-    // same path (`~/.lac/locks/loop-studio-tasks`), read and written by the same
+    // same path (`~/.loop-studio/locks/loop-studio-tasks`), read and written by the same
     // `loop-studio worker`. Three things were wrong with the Studio's copy, and all
     // three are defects the Rust side had already been fixed for:
     //
@@ -380,7 +380,7 @@ public class LoopsStore: ObservableObject {
     /// non-zero on EPERM and cannot see the errno) concludes, and the two
     /// implementations must reach the same verdict on the same record. The
     /// case it gets "wrong" — a lock held by another user's process — cannot
-    /// occur for a per-user `~/.lac/locks`, which only that user can write.
+    /// occur for a per-user `~/.loop-studio/locks`, which only that user can write.
     nonisolated public static func processIsAlive(_ pid: Int32) -> Bool? {
         guard pid > 0 else { return nil }
         if kill(pid, 0) == 0 { return true }

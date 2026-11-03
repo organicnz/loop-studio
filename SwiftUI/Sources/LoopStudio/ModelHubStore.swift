@@ -456,7 +456,7 @@ public class ModelHubStore: ObservableObject {
 
         let searchDirs = [
             "/Volumes/AIModels",
-            home + "/.lac/models",
+            home + "/.loop-studio/models",
             home + "/.cache/huggingface/hub",
             home + "/.ollama/models/manifests"
         ]

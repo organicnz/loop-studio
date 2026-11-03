@@ -1015,7 +1015,7 @@ struct QueueLockTests {
     ///
     /// `withQueueLock` was a `@MainActor` function whose wait was
     /// `Thread.sleep`, for up to 30 seconds: a `lac worker` holding
-    /// `~/.lac/locks/loop-studio-tasks` froze every window, including the one
+    /// `~/.loop-studio/locks/loop-studio-tasks` froze every window, including the one
     /// streaming an answer. The wait is now a suspension off the main actor.
     @Test @MainActor func aHeldQueueLockDoesNotBlockTheMainActor() async throws {
         let root = testDirectory()
@@ -1167,7 +1167,7 @@ struct CancelledStreamTests {
         #expect(last.model == "test-model")
 
         // Persisted, not just in memory: a relaunch must show it too.
-        let file = root.appendingPathComponent(".lac/chat-threads.jsonl")
+        let file = root.appendingPathComponent(".loop-studio/chat-threads.jsonl")
         let onDisk = try String(contentsOf: file, encoding: .utf8)
         #expect(onDisk.contains("the first half of an answer"), "not persisted: \(onDisk)")
 
@@ -1961,7 +1961,7 @@ struct DetachedLogHygieneTests {
     }
 }
 
-/// `~/.lac/locks/loop-studio-tasks` is taken by two implementations of one rule: the
+/// `~/.loop-studio/locks/loop-studio-tasks` is taken by two implementations of one rule: the
 /// Rust one in `common::lock_is_reclaimable` and this one. They cannot call each
 /// other — Swift and Rust, one filesystem — so instead both suites read the
 /// same table in `docs/lock-parity.tsv` and assert the same verdicts. A change

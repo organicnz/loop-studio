@@ -489,7 +489,7 @@ class NetworkManager: ObservableObject {
         _ lane: Lane,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         mlxPortFile: String? = try? String(
-            contentsOf: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".lac/mlx.port"),
+            contentsOf: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".loop-studio/mlx.port"),
             encoding: .utf8
         )
     ) -> Int {

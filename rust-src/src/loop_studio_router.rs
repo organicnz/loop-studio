@@ -17,7 +17,7 @@
 //! - Bounded work: 64 KiB headers, 16 MiB body per request, and a 256 MiB
 //!   ceiling on body memory held at once (allocated capacity, not bytes
 //!   consumed), so parallel uploads cannot pin the heap.
-//! - Per-request usage log (~/.lac/router-usage.jsonl, rotated at 8MB)
+//! - Per-request usage log (~/.loop-studio/router-usage.jsonl, rotated at 8MB)
 //!   with byte counts and token estimates — the honest token source that
 //!   lets kv-manage stop scraping for session numbers.
 //! - Zero-cost model sniffing: when the request already names a model and
@@ -172,7 +172,7 @@ impl HostFactsCache {
 }
 
 /// MLX lane port with drift awareness (serve-mlx moves to 8082+ when
-/// 8080 is taken and records it in ~/.lac/mlx.port).
+/// 8080 is taken and records it in ~/.loop-studio/mlx.port).
 fn port_mlx() -> u16 {
     common::mlx_port()
 }
@@ -314,7 +314,7 @@ fn backend_label(id: usize) -> &'static str {
 /// refuse to start — and the wrong answer for an operator *asking* for a lane.
 /// Both callers here are requests, and both had this defect:
 /// `LOOP_STUDIO_BACKEND=mlxx` passed the "non-empty and not auto" guard, was silently
-/// resolved to `auto`, and was then written to `~/.lac/router-backend`,
+/// resolved to `auto`, and was then written to `~/.loop-studio/router-backend`,
 /// destroying the lane the operator had chosen and persisted. `?target=mlxx`
 /// did the same and answered `200 {"status":"switched"}`.
 ///
@@ -1722,7 +1722,7 @@ fn retryable_response(
 // --------------------------------------------------------------- /lac/* -----
 
 fn backend_pref_path() -> String {
-    format!("{}/.lac/router-backend", common::home_dir())
+    format!("{}/.loop-studio/router-backend", common::home_dir())
 }
 
 fn load_persisted_backend() -> usize {
@@ -1735,7 +1735,7 @@ fn load_persisted_backend() -> usize {
 /// Write the chosen backend so it survives a restart. Returns whether it
 /// actually reached the disk: the switch takes effect in memory either way, but
 /// the reply used to say `"persisted": true` unconditionally while the error
-/// was dropped, so a read-only or full `~/.lac` silently lost the operator's
+/// was dropped, so a read-only or full `~/.loop-studio` silently lost the operator's
 /// choice and the gateway came back on the previous lane.
 fn persist_backend(id: usize) -> bool {
     common::atomic_write(&backend_pref_path(), backend_label(id)).is_ok()
@@ -4218,9 +4218,9 @@ fn main() {
     // An unrecognised `LOOP_STUDIO_BACKEND` is refused, not resolved. The guard below
     // used to be "non-empty and not `auto`", so `mlxx` passed it, `backend_id`
     // turned it into `auto`, and the result was *written* to
-    // `~/.lac/router-backend` — a typo in one plist line destroyed the lane the
+    // `~/.loop-studio/router-backend` — a typo in one plist line destroyed the lane the
     // operator had chosen and persisted, with nothing on stderr. The write's
-    // result was discarded too, so a read-only `~/.lac` was silent as well.
+    // result was discarded too, so a read-only `~/.loop-studio` was silent as well.
     if let Ok(target) = env::var("LOOP_STUDIO_BACKEND") {
         if !target.trim().is_empty() && target.trim().to_lowercase() != "auto" {
             match backend_id_strict(&target) {
@@ -4369,7 +4369,7 @@ fn main() {
         body_budget.limit / 3 / 1024
     );
     eprintln!(
-        "  Preferred backend: {} (LOOP_STUDIO_BACKEND env > ~/.lac/router-backend)",
+        "  Preferred backend: {} (LOOP_STUDIO_BACKEND env > ~/.loop-studio/router-backend)",
         backend_label(preferred.load(Ordering::SeqCst))
     );
     eprintln!("  Health & metrics: http://{}/loop-studio/status", bound_addr);
@@ -4506,7 +4506,7 @@ mod tests {
     /// `backend_id` maps anything unrecognised to `auto`, which is the correct
     /// reading of a corrupt saved file and the wrong reading of a request. Both
     /// request paths had this defect: `LOOP_STUDIO_BACKEND=mlxx` was written straight
-    /// through to `~/.lac/router-backend`, replacing the lane the operator had
+    /// through to `~/.loop-studio/router-backend`, replacing the lane the operator had
     /// chosen and persisted, with nothing on stderr; and `/lac/switch?target=
     /// mlxx` did the same and answered `200 {"status": "switched"}`.
     ///

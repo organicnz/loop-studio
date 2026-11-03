@@ -380,7 +380,7 @@ public struct ModelHubView: View {
                         Text("On-Device Storage Telemetry")
                             .font(.system(size: 13, weight: .bold))
                     }
-                    Text("Live scan of /Volumes/AIModels, ~/.lac/models, ~/.cache/huggingface, and ~/.ollama")
+                    Text("Live scan of /Volumes/AIModels, ~/.loop-studio/models, ~/.cache/huggingface, and ~/.ollama")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                 }
@@ -445,7 +445,7 @@ public struct ModelHubView: View {
                         .foregroundColor(.secondary.opacity(0.6))
                     Text("No On-Device Models Detected")
                         .font(.system(size: 15, weight: .semibold))
-                    Text("Place MLX weights in `~/.lac/models` or an external drive at `/Volumes/AIModels` (recommended per AGENTS.md), or download directly from Hugging Face.")
+                    Text("Place MLX weights in `~/.loop-studio/models` or an external drive at `/Volumes/AIModels` (recommended per AGENTS.md), or download directly from Hugging Face.")
                         .font(.system(size: 12))
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)

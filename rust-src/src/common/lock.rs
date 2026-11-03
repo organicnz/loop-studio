@@ -96,12 +96,12 @@ pub(crate) fn lock_is_reclaimable(
     }
 }
 
-/// Acquire `~/.lac/locks/<name>`. Returns None when a live owner holds it.
+/// Acquire `~/.loop-studio/locks/<name>`. Returns None when a live owner holds it.
 /// `stale_secs` is only a backstop for when the owner pid cannot be probed;
 /// a live owner keeps the lock regardless of wall-clock age (a forward
 /// clock jump must never hand one queue to two workers).
 pub fn acquire_lock(name: &str, stale_secs: u64) -> Option<DirLock> {
-    let parent = format!("{}/.lac/locks", home_dir());
+    let parent = format!("{}/.loop-studio/locks", home_dir());
     let _ = fs::create_dir_all(&parent);
     let dir = format!("{}/{}", parent, name);
     for _ in 0..2 {

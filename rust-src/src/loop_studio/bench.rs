@@ -278,7 +278,7 @@ pub fn cmd_tune(args: &[String]) {
     println!("Winner (throughput): {}", winner);
     if apply {
         if !common::persist_or_warn(
-            &format!("{}/.lac/router-backend", common::home_dir()),
+            &format!("{}/.loop-studio/router-backend", common::home_dir()),
             winner,
             "tune_persist",
         ) {

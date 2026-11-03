@@ -79,7 +79,7 @@ pub fn ollama_port() -> u16 {
 /// The rule for turning a configured or recorded MLX port into a port the
 /// router will actually use: a trimmed, in-range, non-zero `u16`, or nothing.
 ///
-/// Named and shared because `serve-mlx` writes `~/.lac/mlx.port` and this
+/// Named and shared because `serve-mlx` writes `~/.loop-studio/mlx.port` and this
 /// module reads it, and the two had drifted. The writer accepted a bare
 /// `parse()`, so `MLX_PORT=0` published `0`, handed `--port 0` to the engine
 /// (which makes the OS assign a random ephemeral port), and left the router
@@ -100,7 +100,7 @@ pub fn mlx_port() -> u16 {
             return port;
         }
     }
-    if let Ok(s) = fs::read_to_string(format!("{}/.lac/mlx.port", home_dir())) {
+    if let Ok(s) = fs::read_to_string(format!("{}/.loop-studio/mlx.port", home_dir())) {
         if let Some(port) = mlx_port_from(&s) {
             return port;
         }
@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn mlx_port_rule_is_shared_by_writer_and_reader() {
-        // `serve-mlx` writes ~/.lac/mlx.port and this module reads it, so the
+        // `serve-mlx` writes ~/.loop-studio/mlx.port and this module reads it, so the
         // two must agree on what a usable port is. The writer used to accept
         // `0`, which the reader discards: the engine bound a random ephemeral
         // port while the file said 0, and the lane stayed unfindable.

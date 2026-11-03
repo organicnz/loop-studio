@@ -552,7 +552,7 @@ fn thermal_state_from_pmset() -> Option<String> {
 }
 
 /// Hot-swap the router's preferred backend via /lac/switch (persisted
-/// router-side in ~/.lac/router-backend, survives restarts).
+/// router-side in ~/.loop-studio/router-backend, survives restarts).
 /// What to show for one HTTP reply, given the three things that can happen.
 ///
 /// Split out from both callers so the decision is testable without a socket, and
@@ -736,7 +736,7 @@ fn preflight(root: &str) {
     let mut states = Vec::new();
     for p in [
         "/Volumes/AIModels/hf/agent-state.json".to_string(),
-        format!("{}/.lac/agent-state.json", home),
+        format!("{}/.loop-studio/agent-state.json", home),
     ] {
         match std::fs::metadata(&p) {
             Ok(m) => states.push(format!("{} ({} bytes)", p, m.len())),

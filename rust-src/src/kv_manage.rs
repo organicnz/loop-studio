@@ -1,6 +1,6 @@
 //! kv-manage v2.7 — context cache risk analyzer & truncation engine.
 //!
-//! v2.7: the router's usage log (~/.lac/router-usage.jsonl) is now the
+//! v2.7: the router's usage log (~/.loop-studio/router-usage.jsonl) is now the
 //! fallback token source, replacing the fragile opencode2-endpoint
 //! scrape. Estimates can only escalate GREEN→YELLOW: only measurements
 //! (explicit --tokens) or real RAM pressure may call RED.
@@ -574,7 +574,7 @@ mod tests {
     #[test]
     fn rotated_usage_log_keeps_the_name_the_router_writes() {
         let (live, rotated) = common::usage_log_paths();
-        assert!(live.ends_with("/.lac/router-usage.jsonl"), "{live}");
+        assert!(live.ends_with("/.loop-studio/router-usage.jsonl"), "{live}");
         // The ordinary rotated-log suffix, and the name already on disk.
         assert_eq!(rotated, format!("{live}.1"), "{rotated}");
         assert!(

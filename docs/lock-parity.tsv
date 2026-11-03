@@ -1,6 +1,6 @@
 # Loop Studio queue-lock reclaim parity table
 #
-# `~/.lac/locks/loop-studio-tasks` is taken by two implementations of one rule: the
+# `~/.loop-studio/locks/loop-studio-tasks` is taken by two implementations of one rule: the
 # Rust one in `common::lock_is_reclaimable` (used by `loop-studio worker`, `loop-studio loop`)
 # and the Swift one in `LoopsStore.lockIsReclaimable` (used by the Studio).
 # They cannot call each other — Swift and Rust, one filesystem — so instead both

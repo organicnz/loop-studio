@@ -95,6 +95,18 @@ pub fn home_dir() -> String {
     }
 }
 
+/// The Loop Studio state directory (~/.loop-studio).
+pub fn state_dir() -> String {
+    let dir = format!("{}/.loop-studio", home_dir());
+    if !Path::new(&dir).exists() {
+        let old = format!("{}/.loop-studio", home_dir());
+        if Path::new(&old).exists() {
+            eprintln!("Notice: ~/.loop-studio exists but ~/.loop-studio does not. Run: mv ~/.loop-studio ~/.loop-studio");
+        }
+    }
+    dir
+}
+
 /// Signal handler type.
 #[cfg(unix)]
 type Sighandler = unsafe extern "C" fn(std::ffi::c_int);
@@ -219,7 +231,7 @@ pub fn persist_or_warn(path: &str, contents: &str, ctx: &str) -> bool {
         Err(e) => {
             eprintln!("warning: {} write to {} failed: {}", ctx, path, e);
             append_jsonl(
-                &format!("{}/.lac/event.log", home_dir()),
+                &format!("{}/event.log", state_dir()),
                 &format!("{{\"ts\":{},\"level\":\"warn\",\"ctx\":\"{}\",\"err\":\"{}\"}}", now_unix(), ctx, e),
             );
             false
@@ -246,7 +258,7 @@ pub fn model_base() -> String {
     if volume_mounted("/Volumes/AIModels") {
         "/Volumes/AIModels".to_string()
     } else {
-        format!("{}/.lac/models", home_dir())
+        format!("{}/models", state_dir())
     }
 }
 

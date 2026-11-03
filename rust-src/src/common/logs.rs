@@ -169,7 +169,7 @@ pub fn task_logs_dir() -> String {
 
 /// [`task_logs_dir`] for an explicit home.
 pub fn task_logs_dir_in(home: &str) -> String {
-    format!("{home}/.lac/task-logs")
+    format!("{home}/.loop-studio/task-logs")
 }
 
 /// Bytes and file count under [`task_logs_dir`].
@@ -298,7 +298,7 @@ pub fn log_file_name(which: &str) -> Option<&'static str> {
 
 /// Worker / daemon event log path.
 pub fn event_log_path() -> String {
-    format!("{}/.lac/worker-events.jsonl", home_dir())
+    format!("{}/.loop-studio/worker-events.jsonl", home_dir())
 }
 
 pub fn log_event(kind: &str, msg: &str) {

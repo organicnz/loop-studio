@@ -577,11 +577,11 @@ mod tests {
         // is present but records the wrong library, so this is a reconcile —
         // which is exactly the transition the one-shot marker skipped.
         assert_eq!(
-            ensure_zprofile_in(&zp, "/home/u/.lac/models"),
+            ensure_zprofile_in(&zp, "/home/u/.loop-studio/models"),
             ZprofileOutcome::Reconciled
         );
         let internal = fs::read_to_string(&zp).expect("read");
-        assert!(internal.contains("HF_HOME=\"/home/u/.lac/models/hf\""), "{internal}");
+        assert!(internal.contains("HF_HOME=\"/home/u/.loop-studio/models/hf\""), "{internal}");
 
         // ...and the reverse transition, which is worse: an HF_HOME pointing
         // into a volume that is no longer mounted.
@@ -591,7 +591,7 @@ mod tests {
         );
         let back = fs::read_to_string(&zp).expect("read");
         assert!(back.contains("HF_HOME=\"/Volumes/AIModels/hf\""), "{back}");
-        assert!(!back.contains("/home/u/.lac/models"), "stale path survived: {back}");
+        assert!(!back.contains("/home/u/.loop-studio/models"), "stale path survived: {back}");
         // Exactly one managed block, never a second appended copy.
         assert_eq!(back.matches(ZPROFILE_MARKER).count(), 1, "{back}");
         assert_eq!(back.matches(ZPROFILE_END).count(), 1, "{back}");
@@ -619,14 +619,14 @@ mod tests {
 
         // Now change the target. Only the managed region may change.
         assert_eq!(
-            ensure_zprofile_in(&zp, "/home/u/.lac/models"),
+            ensure_zprofile_in(&zp, "/home/u/.loop-studio/models"),
             ZprofileOutcome::Reconciled
         );
         let after = fs::read_to_string(&zp).expect("read");
         for line in ["# my shell", "export EDITOR=vim", "alias ll='ls -l'"] {
             assert!(after.contains(line), "reconcile dropped {line}: {after}");
         }
-        assert!(after.contains("HF_HOME=\"/home/u/.lac/models/hf\""), "{after}");
+        assert!(after.contains("HF_HOME=\"/home/u/.loop-studio/models/hf\""), "{after}");
         assert!(!after.contains("/Volumes/AIModels"), "stale path survived: {after}");
 
         // A file with no trailing newline still gets a valid block.

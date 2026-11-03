@@ -10,7 +10,7 @@ use super::home_dir;
 /// The router's per-request usage log, and the rotated generation it keeps
 /// beside it, as (live, rotated).
 pub fn usage_log_paths() -> (String, String) {
-    let live = format!("{}/.lac/router-usage.jsonl", home_dir());
+    let live = format!("{}/.loop-studio/router-usage.jsonl", home_dir());
     let rotated = format!("{live}.1");
     (live, rotated)
 }
@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn usage_log_rotated_name_is_the_one_the_reader_asks_for() {
         let (live, rotated) = usage_log_paths();
-        assert!(live.ends_with("/.lac/router-usage.jsonl"), "{live}");
+        assert!(live.ends_with("/.loop-studio/router-usage.jsonl"), "{live}");
         assert_eq!(rotated, format!("{live}.1"), "{rotated}");
     }
 }

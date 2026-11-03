@@ -167,19 +167,19 @@ class ChatStore: ObservableObject {
     }
 
     static func threadsFile() -> URL {
-        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".lac/chat-threads.jsonl")
+        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".loop-studio/chat-threads.jsonl")
     }
 
     static func titlesFile() -> URL {
-        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".lac/chat-titles.json")
+        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".loop-studio/chat-titles.json")
     }
 
     private var threadsFileURL: URL {
-        rootURL.appendingPathComponent(".lac/chat-threads.jsonl")
+        rootURL.appendingPathComponent(".loop-studio/chat-threads.jsonl")
     }
 
     private var titlesFileURL: URL {
-        rootURL.appendingPathComponent(".lac/chat-titles.json")
+        rootURL.appendingPathComponent(".loop-studio/chat-titles.json")
     }
 
     /// Local 27B KV budget: never request more than 4k completion tokens —

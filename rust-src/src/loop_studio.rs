@@ -3,7 +3,7 @@
 //! v2.6 hardening over v2.5:
 //! - Shared `common` module (memory/thermal/ports/atomic writes/locks).
 //! - Worker is single-flight (lockdir), crash-recoverable
-//!   (~/.lac/worker-current preserves abandoned worktrees for review).
+//!   (~/.loop-studio/worker-current preserves abandoned worktrees for review).
 //! - Queue updates target the task id (old `replacen("status: pending")`
 //!   could complete the WRONG task) via atomic writes, with an attempts
 //!   counter and dead-letter at 3.
@@ -922,7 +922,7 @@ fn count_files(dir: &str, ext: &str) -> usize {
 /// the one command that reclaims it.
 ///
 /// `task_bytes` is the per-task agent transcript tree, reported alongside the
-/// daemon logs because it is a *different directory* — `~/.lac/task-logs` — and
+/// daemon logs because it is a *different directory* — `~/.loop-studio/task-logs` — and
 /// the daemon footprint scan only ever looked at `~/Library/Logs`. So the tree
 /// that actually grows fastest on a busy worker was the one number the
 /// diagnostic could not see. It is passed in rather than read here so the
@@ -940,11 +940,11 @@ fn doctor_logs_check(bytes: u64, files: usize, task_bytes: u64, task_files: usiz
     let task_over = task_bytes > (common::TASK_LOG_MAX_BYTES * common::TASK_LOG_KEEP as u64);
     let task_note = if task_over {
         format!(
-            "; agent transcripts {task_mib:.1} MiB across {task_files} file(s) in ~/.lac/task-logs — reclaim with `loop-studio logs tasks --purge`"
+            "; agent transcripts {task_mib:.1} MiB across {task_files} file(s) in ~/.loop-studio/task-logs — reclaim with `loop-studio logs tasks --purge`"
         )
     } else if task_files > 0 {
         format!(
-            "; agent transcripts {task_mib:.1} MiB across {task_files} file(s) in ~/.lac/task-logs"
+            "; agent transcripts {task_mib:.1} MiB across {task_files} file(s) in ~/.loop-studio/task-logs"
         )
     } else {
         String::new()
@@ -999,7 +999,7 @@ fn cmd_doctor(root: &str, args: &[String]) -> i32 {
         checks.push(Check {
             name: "model_volume",
             level: "warn",
-            detail: "/Volumes/AIModels not mounted; internal fallback ~/.lac/models".to_string(),
+            detail: "/Volumes/AIModels not mounted; internal fallback ~/.loop-studio/models".to_string(),
         });
     }
     if let Some(df) = disk_free_gib(&env::var("HOME").unwrap_or_else(|_| ".".to_string())) {
@@ -1190,7 +1190,7 @@ fn cmd_doctor(root: &str, args: &[String]) -> i32 {
     let warns = checks.iter().filter(|c| c.level == "warn").count();
 
     // History: one JSONL line per run so RAM/issues trends are visible.
-    let hist_path = format!("{}/.lac/doctor-history.jsonl", common::home_dir());
+    let hist_path = format!("{}/.loop-studio/doctor-history.jsonl", common::home_dir());
     let prev_free: Option<f64> = fs::read_to_string(&hist_path).ok().and_then(|c| {
         let last = c.lines().last()?;
         let p = last.find("\"free\":")? + 7;
@@ -1562,7 +1562,7 @@ fn cmd_tune(args: &[String]) {
     println!("Winner (throughput): {}", winner);
     if apply {
         if !common::persist_or_warn(
-            &format!("{}/.lac/router-backend", common::home_dir()),
+            &format!("{}/.loop-studio/router-backend", common::home_dir()),
             winner,
             "tune_persist",
         ) {
@@ -1613,7 +1613,7 @@ fn cmd_thermal() {
 // --------------------------------------------------------------------- cap -
 
 fn cap_path() -> String {
-    format!("{}/.lac/context-cap", common::home_dir())
+    format!("{}/.loop-studio/context-cap", common::home_dir())
 }
 
 fn cmd_cap(args: &[String]) {
@@ -2404,7 +2404,7 @@ fn block_field(block: &str, key: &str) -> Option<String> {
 }
 
 /// Allowlist for task ids. Ids flow into a transcript path
-/// (`~/.lac/task-logs/<id>-<ts>.log`), a git branch (`task/<id>`), and a
+/// (`~/.loop-studio/task-logs/<id>-<ts>.log`), a git branch (`task/<id>`), and a
 /// commit message — all from YAML the worker does not fully control. Only
 /// `[A-Za-z0-9][A-Za-z0-9._-]{0,64}` passes, so `../../evil`, absolute
 /// paths, spaces, and control chars can never reach the fs or git.
@@ -2945,10 +2945,10 @@ fn run_with_timeout(cmd: &str, args: &[&str], dir: &str, timeout: Duration) -> i
     }
 }
 
-/// Transcripts live under ~/.lac/task-logs/<id>-<unix>.log.
+/// Transcripts live under ~/.loop-studio/task-logs/<id>-<unix>.log.
 fn task_log_path(id: &str) -> String {
     format!(
-        "{}/.lac/task-logs/{}-{}.log",
+        "{}/.loop-studio/task-logs/{}-{}.log",
         common::home_dir(),
         id,
         common::now_unix()
@@ -3067,7 +3067,7 @@ fn git_in(root: &str, args: &[&str]) -> GitOutput {
 }
 
 fn worker_current_path() -> String {
-    format!("{}/.lac/worker-current", common::home_dir())
+    format!("{}/.loop-studio/worker-current", common::home_dir())
 }
 
 // ------------------------------------------------------------------ worker -
@@ -3090,7 +3090,7 @@ fn cmd_worker(root: &str, args: &[String]) {
     let _lock = match common::acquire_lock("loop-studio-worker", 900) {
         Some(l) => l,
         None => {
-            eprintln!("Another loop-studio worker holds the lock (~/.lac/locks/loop-studio-worker). Exiting.");
+            eprintln!("Another loop-studio worker holds the lock (~/.loop-studio/locks/loop-studio-worker). Exiting.");
             std::process::exit(1);
         }
     };
@@ -3117,7 +3117,7 @@ fn cmd_worker(root: &str, args: &[String]) {
             {
                 Ok(child) => {
                     common::persist_or_warn(
-                        &format!("{}/.lac/router.pid", home),
+                        &format!("{}/.loop-studio/router.pid", home),
                         &child.id().to_string(),
                         "router_pid",
                     );
@@ -3224,7 +3224,7 @@ fn cmd_worker(root: &str, args: &[String]) {
         let task_id = task.id.clone();
         let task_branched = Arc::new(AtomicBool::new(false));
         let worktree_path = format!(
-            "{}/.lac/worker-worktrees/{}-a{}-{}",
+            "{}/.loop-studio/worker-worktrees/{}-a{}-{}",
             home,
             task.id,
             task.attempts + 1,
@@ -3499,7 +3499,7 @@ fn cmd_worker(root: &str, args: &[String]) {
 fn cmd_stop() {
     println!("Stopping Loop Studio services...");
     let pid_files = [
-        (format!("{}/.lac/router.pid", common::home_dir()), "loop-studio-router"),
+        (format!("{}/.loop-studio/router.pid", common::home_dir()), "loop-studio-router"),
     ];
     for (pf, label) in pid_files {
         if let Ok(pid) = fs::read_to_string(&pf) {
@@ -3920,7 +3920,7 @@ fn main() {
                 {
                     Ok(child) => {
                         let _ = common::atomic_write(
-                            &format!("{}/.lac/router.pid", common::home_dir()),
+                            &format!("{}/.loop-studio/router.pid", common::home_dir()),
                             &child.id().to_string(),
                         );
                         println!("loop-studio-router started (pid {}).", child.id());
@@ -4011,7 +4011,7 @@ mod tests {
     /// report log cost, and it has to be reclaimable by name.
     ///
     /// `run_logged` writes a new timestamped file per task per attempt, under
-    /// `~/.lac/task-logs`, with no size cap, no rotation and no reader. The
+    /// `~/.loop-studio/task-logs`, with no size cap, no rotation and no reader. The
     /// footprint scan only ever looked at `~/Library/Logs` for `loop-studio-*`, so this
     /// tree — usually the larger one on a busy worker — was invisible to
     /// `loop-studio doctor` while it grew for as long as the machine was up.

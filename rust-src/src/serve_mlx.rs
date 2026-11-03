@@ -22,7 +22,7 @@ use std::time::Duration;
 /// `common::mlx_port()` — the reader, and the function the router calls to
 /// find this lane — ignores `0` and anything unparseable, falling through to
 /// 8080. This used to accept a bare `parse()`, so `MLX_PORT=0` published `0`
-/// to `~/.lac/mlx.port`, handed `--port 0` to the engine (which makes the OS
+/// to `~/.loop-studio/mlx.port`, handed `--port 0` to the engine (which makes the OS
 /// pick a random ephemeral port), and left the router reading a `0` it
 /// rejects. The lane then became unfindable even after the variable was
 /// removed, because the stale `0` was re-read on every lookup. A writer must
@@ -96,7 +96,7 @@ fn port_is_pinned() -> bool {
 /// The commonest reason for a bind failure is *something else already owns that
 /// port* — and that is exactly the case a retry can never fix: the daemon
 /// re-ran `--port 8080` every 60 seconds for the rest of the machine's life,
-/// failing identically, while `~/.lac/mlx.port` kept advertising 8080. Probing
+/// failing identically, while `~/.loop-studio/mlx.port` kept advertising 8080. Probing
 /// on the way back up is what makes the loop able to recover at all.
 #[derive(Debug, PartialEq)]
 enum PortRecovery {
@@ -207,7 +207,7 @@ fn spawn_server(model: &str, port: u16) -> std::io::Result<std::process::ExitSta
 /// Set by the readiness prober the first time the engine answers HTTP.
 static EVER_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Removes `~/.lac/mlx.port` when the wrapper exits, so a crash cannot leave
+/// Removes `~/.loop-studio/mlx.port` when the wrapper exits, so a crash cannot leave
 /// a port advertised that nothing is listening on. The router's readiness
 /// gate means a stale file costs a wrong "lane down" report rather than
 /// misrouted traffic, but the file claiming a lane that does not exist is
@@ -225,12 +225,12 @@ impl PortFile {
 
     fn new() -> Self {
         Self {
-            path: format!("{}/.lac/mlx.port", common::home_dir()),
+            path: format!("{}/.loop-studio/mlx.port", common::home_dir()),
         }
     }
 
     /// A port file aimed at a path that cannot exist, so a test can exercise
-    /// republication without writing to the developer's real `~/.lac`.
+    /// republication without writing to the developer's real `~/.loop-studio`.
     #[cfg(test)]
     fn new_in(path: &str) -> Self {
         Self {
@@ -429,7 +429,7 @@ mod tests {
     /// The retry loop reuses a port it was given unless something else is
     /// holding it. It used to reuse it unconditionally, so a foreign process
     /// on 8080 meant `--port 8080` failed identically every 60 seconds for the
-    /// rest of the machine's life while `~/.lac/mlx.port` kept advertising
+    /// rest of the machine's life while `~/.loop-studio/mlx.port` kept advertising
     /// 8080 — a retry loop that could not recover from its own commonest cause.
     #[test]
     fn a_crashed_lane_re_probes_a_port_someone_else_holds() {
@@ -515,7 +515,7 @@ mod tests {
 
     /// End to end on the recovery step, with a real socket held on the port:
     /// the lane must move *and* republish, because a lane that drifts to a new
-    /// port while `~/.lac/mlx.port` still names the old one is a lane the
+    /// port while `~/.loop-studio/mlx.port` still names the old one is a lane the
     /// router cannot find — the exact failure the port file exists to prevent.
     #[test]
     fn a_crashed_lane_moves_and_publishes_where_it_actually_serves() {
@@ -524,7 +524,7 @@ mod tests {
 
         let held = TcpListener::bind("127.0.0.1:0").expect("bind");
         let taken = held.local_addr().expect("addr").port();
-        let file = PortFile::new_in("$definitely-not-a-home/.lac/mlx.port");
+        let file = PortFile::new_in("$definitely-not-a-home/.loop-studio/mlx.port");
         let published: Rc<RefCell<Vec<u16>>> = Rc::new(RefCell::new(Vec::new()));
         let sink = Rc::clone(&published);
 
@@ -552,7 +552,7 @@ mod tests {
         use std::cell::RefCell;
         use std::rc::Rc;
 
-        let file = PortFile::new_in("$definitely-not-a-home/.lac/mlx.port");
+        let file = PortFile::new_in("$definitely-not-a-home/.loop-studio/mlx.port");
         let published: Rc<RefCell<Vec<u16>>> = Rc::new(RefCell::new(Vec::new()));
         let sink = Rc::clone(&published);
 
@@ -571,7 +571,7 @@ mod tests {
         use std::cell::RefCell;
         use std::rc::Rc;
 
-        let file = PortFile::new_in("$definitely-not-a-home/.lac/mlx.port");
+        let file = PortFile::new_in("$definitely-not-a-home/.loop-studio/mlx.port");
         let published: Rc<RefCell<Vec<u16>>> = Rc::new(RefCell::new(Vec::new()));
         let sink = Rc::clone(&published);
         let chosen = recover_lane_port(8080, false, &file, |_| false, || {

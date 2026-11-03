@@ -263,11 +263,11 @@ pub fn doctor_logs_check(bytes: u64, files: usize, task_bytes: u64, task_files: 
     let task_over = task_bytes > (common::TASK_LOG_MAX_BYTES * common::TASK_LOG_KEEP as u64);
     let task_note = if task_over {
         format!(
-            "; agent transcripts {task_mib:.1} MiB across {task_files} file(s) in ~/.lac/task-logs — reclaim with `loop-studio logs tasks --purge`"
+            "; agent transcripts {task_mib:.1} MiB across {task_files} file(s) in ~/.loop-studio/task-logs — reclaim with `loop-studio logs tasks --purge`"
         )
     } else if task_files > 0 {
         format!(
-            "; agent transcripts {task_mib:.1} MiB across {task_files} file(s) in ~/.lac/task-logs"
+            "; agent transcripts {task_mib:.1} MiB across {task_files} file(s) in ~/.loop-studio/task-logs"
         )
     } else {
         String::new()
@@ -317,7 +317,7 @@ pub fn cmd_doctor(root: &str, args: &[String]) -> i32 {
         checks.push(Check {
             name: "model_volume",
             level: "warn",
-            detail: "/Volumes/AIModels not mounted; internal fallback ~/.lac/models".to_string(),
+            detail: "/Volumes/AIModels not mounted; internal fallback ~/.loop-studio/models".to_string(),
         });
     }
     if let Some(df) = disk_free_gib(&env::var("HOME").unwrap_or_else(|_| ".".to_string())) {
@@ -491,7 +491,7 @@ pub fn cmd_doctor(root: &str, args: &[String]) -> i32 {
     let fails = checks.iter().filter(|c| c.level == "fail").count();
     let warns = checks.iter().filter(|c| c.level == "warn").count();
 
-    let hist_path = format!("{}/.lac/doctor-history.jsonl", common::home_dir());
+    let hist_path = format!("{}/.loop-studio/doctor-history.jsonl", common::home_dir());
     let prev_free: Option<f64> = fs::read_to_string(&hist_path).ok().and_then(|c| {
         let last = c.lines().last()?;
         let p = last.find("\"free\":")? + 7;
@@ -585,7 +585,7 @@ pub fn cmd_thermal() {
 // --------------------------------------------------------------------- cap -
 
 pub fn cap_path() -> String {
-    format!("{}/.lac/context-cap", common::home_dir())
+    format!("{}/.loop-studio/context-cap", common::home_dir())
 }
 
 pub fn cmd_cap(args: &[String]) {
@@ -736,7 +736,7 @@ pub fn cmd_dashboard(root: &str, args: &[String]) {
 pub fn cmd_stop() {
     println!("Stopping Loop Studio services...");
     let pid_files = [
-        (format!("{}/.lac/router.pid", common::home_dir()), "loop-studio-router"),
+        (format!("{}/.loop-studio/router.pid", common::home_dir()), "loop-studio-router"),
     ];
     for (pf, label) in pid_files {
         if let Ok(pid) = fs::read_to_string(&pf) {

@@ -163,7 +163,7 @@ fn main() {
                 {
                     Ok(child) => {
                         let _ = common::atomic_write(
-                            &format!("{}/.lac/router.pid", common::home_dir()),
+                            &format!("{}/.loop-studio/router.pid", common::home_dir()),
                             &child.id().to_string(),
                         );
                         println!("loop-studio-router started (pid {}).", child.id());
