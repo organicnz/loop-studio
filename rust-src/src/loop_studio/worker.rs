@@ -10,13 +10,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::MAX_TASK_ATTEMPTS;
 use super::chat::extract_json_string;
 use super::common;
 use super::loop_runner::git_in;
 use super::orchestrator::{count_pending, judge_next_excluding};
-use super::queue::{Task, parse_tasks, update_task_file};
-use super::review::{ReviewOutcome, review_diff};
+use super::queue::{parse_tasks, update_task_file, Task};
+use super::review::{review_diff, ReviewOutcome};
+use super::MAX_TASK_ATTEMPTS;
 
 /// Default cap injected into OpenCode runs, overridable per operator.
 pub const DEFAULT_CONTEXT_LIMIT: u64 = 32768;
@@ -181,7 +181,11 @@ pub fn run_logged_env(
 }
 
 fn worker_current_path_for(suffix: &str) -> String {
-    format!("{}/.loop-studio/worker-current{}", common::home_dir(), suffix)
+    format!(
+        "{}/.loop-studio/worker-current{}",
+        common::home_dir(),
+        suffix
+    )
 }
 
 /// Clear stale per-thread markers left by a crash. Returns true when at least
@@ -1117,8 +1121,7 @@ fn worker_thread_loop(cfg: &WorkerConfig, shared: &WorkerShared) {
                         since += tick.as_secs();
                         if since >= interval {
                             since = 0;
-                            let (tid, br) =
-                                state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                            let (tid, br) = state.lock().unwrap_or_else(|e| e.into_inner()).clone();
                             write_worker_checkpoint(&tid, &br, "Running", &wt);
                         }
                     }

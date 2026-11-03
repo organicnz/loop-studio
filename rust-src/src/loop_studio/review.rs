@@ -52,7 +52,10 @@ pub fn worker_diff(root: &str) -> String {
             let full = format!("{}/{}", root, path);
             match fs::read(&full) {
                 Ok(bytes) if bytes.len() > 100_000 || bytes.contains(&0) => {
-                    out.push_str(&format!("\n--- untracked (binary/large, name only): {} ---\n", path));
+                    out.push_str(&format!(
+                        "\n--- untracked (binary/large, name only): {} ---\n",
+                        path
+                    ));
                 }
                 Ok(bytes) => {
                     let text = String::from_utf8_lossy(&bytes);
@@ -63,7 +66,10 @@ pub fn worker_diff(root: &str) -> String {
                     }
                 }
                 Err(_) => {
-                    out.push_str(&format!("\n--- untracked (unreadable, name only): {} ---\n", path));
+                    out.push_str(&format!(
+                        "\n--- untracked (unreadable, name only): {} ---\n",
+                        path
+                    ));
                 }
             }
         }
@@ -77,7 +83,10 @@ pub fn worker_diff(root: &str) -> String {
 pub fn review_prompt(task_desc: &str, diff: &str) -> String {
     let short_task: String = task_desc.chars().take(300).collect();
     let (shown, truncated) = if diff.chars().count() > REVIEW_DIFF_LIMIT {
-        (diff.chars().take(REVIEW_DIFF_LIMIT).collect::<String>(), true)
+        (
+            diff.chars().take(REVIEW_DIFF_LIMIT).collect::<String>(),
+            true,
+        )
     } else {
         (diff.to_string(), false)
     };
@@ -197,8 +206,17 @@ pub fn review_diff(root: &str, task_id: &str, task_desc: &str, logpath: &str) ->
         Some((code, _)) => return ReviewOutcome::Unavailable(format!("gateway HTTP {}", code)),
         None => return ReviewOutcome::Unavailable("gateway unreachable/timeout".to_string()),
     };
-    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(logpath) {
-        let _ = writeln!(f, "\n===== reviewer @ {} =====\n{}", common::now_unix(), text);
+    if let Ok(mut f) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(logpath)
+    {
+        let _ = writeln!(
+            f,
+            "\n===== reviewer @ {} =====\n{}",
+            common::now_unix(),
+            text
+        );
     }
     log_minor_findings(task_id, &text);
     let findings = parse_review_findings(&text);

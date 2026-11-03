@@ -173,13 +173,14 @@ pub fn cmd_loop(root: &str, args: &[String]) {
                     match content.find("max_rounds:") {
                         Some(i) => {
                             let tail = &content[i..];
-                            let n: Option<u32> = tail
-                                .split_whitespace()
-                                .nth(1)
-                                .and_then(|s| s.parse().ok());
+                            let n: Option<u32> =
+                                tail.split_whitespace().nth(1).and_then(|s| s.parse().ok());
                             match n {
                                 Some(v) if v > 2 => {
-                                    println!("  [!] max_rounds={} exceeds 2-round policy (AGENTS.md)", v);
+                                    println!(
+                                        "  [!] max_rounds={} exceeds 2-round policy (AGENTS.md)",
+                                        v
+                                    );
                                     warns += 1;
                                 }
                                 None => {
@@ -189,10 +190,14 @@ pub fn cmd_loop(root: &str, args: &[String]) {
                                 _ => {}
                             }
                         }
-                        None => println!("  [!] Notice: 'max_rounds:' not specified (default 2 applies)"),
+                        None => println!(
+                            "  [!] Notice: 'max_rounds:' not specified (default 2 applies)"
+                        ),
                     }
                     if !content.contains("require_human_gate: true") {
-                        println!("  [!] Notice: human gate not enforced (require_human_gate: true)");
+                        println!(
+                            "  [!] Notice: human gate not enforced (require_human_gate: true)"
+                        );
                         warns += 1;
                     }
                     if fails == 0 {
@@ -213,7 +218,11 @@ pub fn cmd_loop(root: &str, args: &[String]) {
         }
         "run" => {
             let dry_run = args.iter().any(|a| a == "--dry-run");
-            let target = args.iter().skip(1).find(|a| !a.starts_with("--")).map(|s| s.as_str());
+            let target = args
+                .iter()
+                .skip(1)
+                .find(|a| !a.starts_with("--"))
+                .map(|s| s.as_str());
             let code = cmd_loop_run(root, target, dry_run);
             if code != 0 {
                 std::process::exit(code);
@@ -237,32 +246,65 @@ pub fn cmd_loop_run(root: &str, target: Option<&str>, dry_run: bool) -> i32 {
     let (task_id, task_desc, loop_name, from_queue) = if let Some(t) = target {
         if t.ends_with(".yaml") {
             let name = t.trim_end_matches(".yaml");
-            (format!("loop-{}", name), format!("Execute standalone loop {}", t), t.to_string(), false)
+            (
+                format!("loop-{}", name),
+                format!("Execute standalone loop {}", t),
+                t.to_string(),
+                false,
+            )
         } else if let Some(matched) = tasks.iter().find(|item| item.id == t) {
-            (matched.id.clone(), matched.desc.clone(), "daily-coding.yaml".to_string(), true)
+            (
+                matched.id.clone(),
+                matched.desc.clone(),
+                "daily-coding.yaml".to_string(),
+                true,
+            )
         } else {
-            ("loop-studio-adhoc".to_string(), t.to_string(), "daily-coding.yaml".to_string(), false)
+            (
+                "loop-studio-adhoc".to_string(),
+                t.to_string(),
+                "daily-coding.yaml".to_string(),
+                false,
+            )
         }
     } else if let Some(first_pending) = tasks.iter().find(|t| t.status == "pending") {
-        (first_pending.id.clone(), first_pending.desc.clone(), "daily-coding.yaml".to_string(), true)
+        (
+            first_pending.id.clone(),
+            first_pending.desc.clone(),
+            "daily-coding.yaml".to_string(),
+            true,
+        )
     } else {
-        ("loop-studio-001".to_string(), "Verify local model stack and run smoke tests via gateway :8000".to_string(), "daily-coding.yaml".to_string(), false)
+        (
+            "loop-studio-001".to_string(),
+            "Verify local model stack and run smoke tests via gateway :8000".to_string(),
+            "daily-coding.yaml".to_string(),
+            false,
+        )
     };
 
     println!("  Task ID: \x1b[1m{}\x1b[0m", task_id);
     println!("  Task:    {}", task_desc);
-    println!("  Loop:    {} (enforcing AGENTS.md single-resident model & human gate)", loop_name);
+    println!(
+        "  Loop:    {} (enforcing AGENTS.md single-resident model & human gate)",
+        loop_name
+    );
     if dry_run {
         println!("  Mode:    \x1b[33m--dry-run (simulation)\x1b[0m");
     }
     println!();
 
-    println!("\x1b[1;34m[1/5 PREFLIGHT]\x1b[0m Verifying resident model, context cap & thermals...");
+    println!(
+        "\x1b[1;34m[1/5 PREFLIGHT]\x1b[0m Verifying resident model, context cap & thermals..."
+    );
     let gateway_up = common::port_up(common::gateway_port());
     if gateway_up {
         println!("  ✓ Gateway :{} online", common::gateway_port());
     } else {
-        println!("  ! Gateway :{} inactive. Running offline simulation.", common::gateway_port());
+        println!(
+            "  ! Gateway :{} inactive. Running offline simulation.",
+            common::gateway_port()
+        );
     }
     let cap = fs::read_to_string(cap_path())
         .ok()
@@ -347,9 +389,13 @@ pub fn cmd_loop_run(root: &str, target: Option<&str>, dry_run: bool) -> i32 {
     }
 
     println!("  -------------------------------------------------------------");
-    println!("\x1b[1;33m[REHEARSAL COMPLETE]\x1b[0m Phases 1-4 were checked. Nothing was implemented,");
+    println!(
+        "\x1b[1;33m[REHEARSAL COMPLETE]\x1b[0m Phases 1-4 were checked. Nothing was implemented,"
+    );
     println!("  nothing was reviewed, and no agent was dispatched. To do the work, run");
-    println!("  `loop-studio worker --drain` (or the loop-orchestrator skill), which dispatches the");
+    println!(
+        "  `loop-studio worker --drain` (or the loop-orchestrator skill), which dispatches the"
+    );
     println!("  agent inside a task/<id> worktree and is what may retire this task.");
 
     if from_queue {

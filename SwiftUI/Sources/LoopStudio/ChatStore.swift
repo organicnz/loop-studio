@@ -797,7 +797,8 @@ class ChatStore: ObservableObject {
     }
 
     /// Map a `GatewayError` to the `ChatError` shown to the user.
-    static func mapGatewayError(_ error: GatewayError) -> Error {
+    /// `nonisolated` so tests can call it without a MainActor context.
+    nonisolated static func mapGatewayError(_ error: GatewayError) -> Error {
         switch error {
         case .http(let code, let detail):
             return ChatError.http(code, detail)

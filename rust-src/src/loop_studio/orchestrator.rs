@@ -3,11 +3,11 @@
 use std::collections::HashSet;
 use std::env;
 
-use super::MAX_TASK_ATTEMPTS;
 use super::chat::{extract_json_string, post_chat};
 use super::common;
 use super::ops::opencode_model;
-use super::queue::{Task, pending_candidates};
+use super::queue::{pending_candidates, Task};
+use super::MAX_TASK_ATTEMPTS;
 
 pub fn count_pending(content: &str) -> (usize, usize) {
     let mut p = 0;

@@ -41,7 +41,12 @@ pub fn post_chat(body: &str) -> Option<(u16, String)> {
         .and_then(|v| v.trim().parse::<u64>().ok())
         .filter(|n| *n > 0)
         .unwrap_or(300);
-    common::http_post(common::gateway_port(), "/v1/chat/completions", body, secs * 1000)
+    common::http_post(
+        common::gateway_port(),
+        "/v1/chat/completions",
+        body,
+        secs * 1000,
+    )
 }
 
 pub fn cmd_chat(root: &str, args: &[String]) {
@@ -52,7 +57,11 @@ pub fn cmd_chat(root: &str, args: &[String]) {
         std::process::exit(2);
     }
     if !common::port_up(common::gateway_port()) {
-        eprintln!("{} (gateway :{} down).", NO_BACKEND_HINT, common::gateway_port());
+        eprintln!(
+            "{} (gateway :{} down).",
+            NO_BACKEND_HINT,
+            common::gateway_port()
+        );
         std::process::exit(1);
     }
     let model = env::var("LOOP_STUDIO_CHAT_MODEL")
@@ -83,7 +92,11 @@ pub fn cmd_chat(root: &str, args: &[String]) {
             std::process::exit(1);
         }
         None => {
-            eprintln!("{} (gateway :{} unreachable mid-request).", NO_BACKEND_HINT, common::gateway_port());
+            eprintln!(
+                "{} (gateway :{} unreachable mid-request).",
+                NO_BACKEND_HINT,
+                common::gateway_port()
+            );
             std::process::exit(1);
         }
     }
@@ -117,9 +130,17 @@ pub fn print_terminal_diff(original: &str, modified: &str, file_name: &str) {
 
     const DIFF_LINE_CAP: usize = 2000;
     if orig_lines.len() + mod_lines.len() > DIFF_LINE_CAP {
-        println!("\x1B[33m(diff truncated: {} lines exceed {} cap — simple +/- fallback)\x1B[0m", orig_lines.len() + mod_lines.len(), DIFF_LINE_CAP);
-        for l in &orig_lines { println!("\x1B[31m- {}\x1B[0m", l); }
-        for l in &mod_lines { println!("\x1B[32m+ {}\x1B[0m", l); }
+        println!(
+            "\x1B[33m(diff truncated: {} lines exceed {} cap — simple +/- fallback)\x1B[0m",
+            orig_lines.len() + mod_lines.len(),
+            DIFF_LINE_CAP
+        );
+        for l in &orig_lines {
+            println!("\x1B[31m- {}\x1B[0m", l);
+        }
+        for l in &mod_lines {
+            println!("\x1B[32m+ {}\x1B[0m", l);
+        }
         return;
     }
 
@@ -186,7 +207,9 @@ pub fn cmd_code(root: &str, args: &[String]) {
             model_override = Some(args[i + 1].clone());
             i += 2;
         } else if args[i] == "--temp" && i + 1 < args.len() {
-            if let Ok(v) = args[i + 1].parse::<f64>() { temp = v; }
+            if let Ok(v) = args[i + 1].parse::<f64>() {
+                temp = v;
+            }
             i += 2;
         } else {
             prompt_parts.push(args[i].clone());
@@ -211,14 +234,20 @@ pub fn cmd_code(root: &str, args: &[String]) {
     if user_input.trim().is_empty() && file_content.is_none() {
         eprintln!("usage: loop-studio code [-f file] [--diff] [--write] \"your instruction...\"");
         eprintln!("Examples:");
-        eprintln!("  loop-studio code -f src/main.rs --diff \"Refactor this function to be thread-safe\"");
+        eprintln!(
+            "  loop-studio code -f src/main.rs --diff \"Refactor this function to be thread-safe\""
+        );
         eprintln!("  loop-studio code -f src/lib.rs --write \"Generate comprehensive unit tests\"");
         eprintln!("  loop-studio code \"Write a zero-allocation circular buffer in Rust\"");
         std::process::exit(2);
     }
 
     if !common::port_up(common::gateway_port()) {
-        eprintln!("{} (gateway :{} down). Start with: loop-studio route --daemon", NO_BACKEND_HINT, common::gateway_port());
+        eprintln!(
+            "{} (gateway :{} down). Start with: loop-studio route --daemon",
+            NO_BACKEND_HINT,
+            common::gateway_port()
+        );
         std::process::exit(1);
     }
 
@@ -233,9 +262,17 @@ pub fn cmd_code(root: &str, args: &[String]) {
     let full_user_content = if let Some(ref code) = file_content {
         let name = file_path.as_deref().unwrap_or("snippet");
         if user_input.trim().is_empty() {
-            format!("Review and improve the following file ({}):\n\n```\n{}\n```", name, code)
+            format!(
+                "Review and improve the following file ({}):\n\n```\n{}\n```",
+                name, code
+            )
         } else {
-            format!("File: {}\n\n```\n{}\n```\n\nTask: {}", name, code, user_input.trim())
+            format!(
+                "File: {}\n\n```\n{}\n```\n\nTask: {}",
+                name,
+                code,
+                user_input.trim()
+            )
         }
     } else {
         user_input.trim().to_string()
@@ -268,7 +305,10 @@ pub fn cmd_code(root: &str, args: &[String]) {
                                 std::process::exit(1);
                             }
                             match fs::write(path, &extracted) {
-                                Ok(_) => println!("✓ Refactored code written to {} (backup saved to {})", path, bak),
+                                Ok(_) => println!(
+                                    "✓ Refactored code written to {} (backup saved to {})",
+                                    path, bak
+                                ),
                                 Err(e) => {
                                     eprintln!("Failed writing to {}: {}", path, e);
                                     std::process::exit(1);
@@ -298,7 +338,11 @@ pub fn cmd_code(root: &str, args: &[String]) {
             std::process::exit(1);
         }
         None => {
-            eprintln!("{} (gateway :{} unreachable mid-request).", NO_BACKEND_HINT, common::gateway_port());
+            eprintln!(
+                "{} (gateway :{} unreachable mid-request).",
+                NO_BACKEND_HINT,
+                common::gateway_port()
+            );
             std::process::exit(1);
         }
     }

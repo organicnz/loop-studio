@@ -101,7 +101,11 @@ pub fn parse_probe_opts(args: &[String]) -> ProbeOpts {
     }
     ProbeOpts {
         tokens: tokens.clamp(8, 4096),
-        temp: if temp.is_finite() { temp.clamp(0.0, 2.0) } else { 0.0 },
+        temp: if temp.is_finite() {
+            temp.clamp(0.0, 2.0)
+        } else {
+            0.0
+        },
     }
 }
 
@@ -161,11 +165,15 @@ pub fn cmd_bench(port: u16, args: &[String]) {
 
     let addr = format!("127.0.0.1:{}", port);
     let sa: Option<std::net::SocketAddr> = addr.parse().ok();
-    let socket = sa.and_then(|sa| TcpStream::connect_timeout(&sa, Duration::from_millis(2000)).ok());
+    let socket =
+        sa.and_then(|sa| TcpStream::connect_timeout(&sa, Duration::from_millis(2000)).ok());
 
     match socket {
         Some(mut stream) => {
-            let req = format!("GET /v1/models HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", addr);
+            let req = format!(
+                "GET /v1/models HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                addr
+            );
             let t0 = Instant::now();
             let _ = stream.write_all(req.as_bytes());
             let _ = stream.set_read_timeout(Some(BENCH_HTTP_TIMEOUT));
@@ -208,7 +216,10 @@ pub fn cmd_bench(port: u16, args: &[String]) {
             }
         }
         None => {
-            eprintln!("  [x] Connection failed to port {}. Service is offline.", port);
+            eprintln!(
+                "  [x] Connection failed to port {}. Service is offline.",
+                port
+            );
             std::process::exit(1);
         }
     }
@@ -241,7 +252,9 @@ pub fn cmd_tune(args: &[String]) {
                     "TTFT {:.2}s total {:.2}s tok/s {}",
                     p.ttft_s.unwrap_or(-1.0),
                     p.total_s,
-                    p.toks.map(|t| format!("{:.1}", t)).unwrap_or_else(|| "-".to_string())
+                    p.toks
+                        .map(|t| format!("{:.1}", t))
+                        .unwrap_or_else(|| "-".to_string())
                 );
                 results.push((name, port, p));
             }
@@ -249,7 +262,11 @@ pub fn cmd_tune(args: &[String]) {
         }
     }
     if results.is_empty() {
-        let hint = if common::mlx_supported() { "loop-studio serve mlx" } else { "loop-studio serve llama" };
+        let hint = if common::mlx_supported() {
+            "loop-studio serve mlx"
+        } else {
+            "loop-studio serve llama"
+        };
         println!("No live backends. Start one with `{}`.", hint);
         return;
     }
@@ -270,7 +287,9 @@ pub fn cmd_tune(args: &[String]) {
             i + 1,
             name,
             port,
-            p.toks.map(|t| format!("{:.1}", t)).unwrap_or_else(|| "-".to_string()),
+            p.toks
+                .map(|t| format!("{:.1}", t))
+                .unwrap_or_else(|| "-".to_string()),
             p.ttft_s.unwrap_or(-1.0)
         );
     }
@@ -282,7 +301,10 @@ pub fn cmd_tune(args: &[String]) {
             winner,
             "tune_persist",
         ) {
-            eprintln!("tune winner '{}' not persisted; re-run with --apply.", winner);
+            eprintln!(
+                "tune winner '{}' not persisted; re-run with --apply.",
+                winner
+            );
         }
         if common::port_up(common::gateway_port()) {
             let url = format!("/loop-studio/switch?target={}", winner);
@@ -291,7 +313,10 @@ pub fn cmd_tune(args: &[String]) {
                 _ => println!("Persisted {}; gateway switch unconfirmed.", winner),
             }
         } else {
-            println!("Persisted {}; gateway down — applies on next router start.", winner);
+            println!(
+                "Persisted {}; gateway down — applies on next router start.",
+                winner
+            );
         }
     } else {
         println!("Re-run with --apply to pin the winner.");

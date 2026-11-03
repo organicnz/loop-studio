@@ -138,7 +138,11 @@ pub fn cmd_status(root: &str, args: &[String]) {
         .map(|f| format!("{:.1} GiB", f))
         .unwrap_or_else(|| "Unknown".to_string());
     println!("================================================================");
-    println!("  Loop Studio STACK TELEMETRY — {} (v{})", common::arch_label(), VERSION);
+    println!(
+        "  Loop Studio STACK TELEMETRY — {} (v{})",
+        common::arch_label(),
+        VERSION
+    );
     println!("================================================================");
     println!("  Primary Model  : {}", model);
     println!(
@@ -155,7 +159,11 @@ pub fn cmd_status(root: &str, args: &[String]) {
     println!("  INFERENCE SERVICES (TCP probe):");
     println!(
         "  - Loop Studio Gateway  : {}",
-        if gw { format!("ONLINE (:{})", common::gateway_port()) } else { "OFFLINE".to_string() }
+        if gw {
+            format!("ONLINE (:{})", common::gateway_port())
+        } else {
+            "OFFLINE".to_string()
+        }
     );
     if mlx {
         println!("  - MLX (Q4 MTP) : ONLINE (:{})", mlx_port);
@@ -188,7 +196,10 @@ pub fn cmd_status(root: &str, args: &[String]) {
             println!("   loop-studio serve mlx    (Speed Q4, native MTP ~45 tok/s)");
         }
         println!("   loop-studio serve llama  (Quality Q8_0)");
-        println!("   loop-studio route        (Start gateway on :{})", common::gateway_port());
+        println!(
+            "   loop-studio route        (Start gateway on :{})",
+            common::gateway_port()
+        );
     }
 }
 
@@ -289,7 +300,11 @@ pub fn cmd_doctor(root: &str, args: &[String]) -> i32 {
     let json = args.iter().any(|a| a == "--json");
     let mut checks: Vec<Check> = Vec::new();
 
-    checks.push(Check { name: "os", level: "ok", detail: common::os_descr() });
+    checks.push(Check {
+        name: "os",
+        level: "ok",
+        detail: common::os_descr(),
+    });
 
     {
         let (bytes, files) = common::lac_logs_footprint();
@@ -297,7 +312,8 @@ pub fn cmd_doctor(root: &str, args: &[String]) -> i32 {
         checks.push(doctor_logs_check(bytes, files, task_bytes, task_files));
     }
 
-    let (mem_level, mem_detail) = doctor_memory_check_with(common::total_ram_gib(), common::free_ram_gib());
+    let (mem_level, mem_detail) =
+        doctor_memory_check_with(common::total_ram_gib(), common::free_ram_gib());
     checks.push(Check {
         name: "memory",
         level: mem_level,
@@ -317,7 +333,8 @@ pub fn cmd_doctor(root: &str, args: &[String]) -> i32 {
         checks.push(Check {
             name: "model_volume",
             level: "warn",
-            detail: "/Volumes/AIModels not mounted; internal fallback ~/.loop-studio/models".to_string(),
+            detail: "/Volumes/AIModels not mounted; internal fallback ~/.loop-studio/models"
+                .to_string(),
         });
     }
     if let Some(df) = disk_free_gib(&env::var("HOME").unwrap_or_else(|_| ".".to_string())) {
@@ -376,7 +393,10 @@ pub fn cmd_doctor(root: &str, args: &[String]) -> i32 {
         });
     }
 
-    for (name, rel) in [("opencode_config", "opencode.jsonc"), ("agent_rules", "docs/AGENTS.md")] {
+    for (name, rel) in [
+        ("opencode_config", "opencode.jsonc"),
+        ("agent_rules", "docs/AGENTS.md"),
+    ] {
         let p = format!("{}/{}", root, rel);
         let fallback = format!("{}/AGENTS.md", root);
         let ok = fs::metadata(&p).is_ok() || fs::metadata(&fallback).is_ok();
@@ -430,7 +450,10 @@ pub fn cmd_doctor(root: &str, args: &[String]) -> i32 {
         detail: if gw_up {
             format!("gateway :{} accepting", common::gateway_port())
         } else {
-            format!("gateway :{} down (start with loop-studio route --daemon)", common::gateway_port())
+            format!(
+                "gateway :{} down (start with loop-studio route --daemon)",
+                common::gateway_port()
+            )
         },
     });
     if !any_backend {
@@ -495,7 +518,13 @@ pub fn cmd_doctor(root: &str, args: &[String]) -> i32 {
     let prev_free: Option<f64> = fs::read_to_string(&hist_path).ok().and_then(|c| {
         let last = c.lines().last()?;
         let p = last.find("\"free\":")? + 7;
-        last[p..].trim_start().split(',').next()?.trim().parse().ok()
+        last[p..]
+            .trim_start()
+            .split(',')
+            .next()?
+            .trim()
+            .parse()
+            .ok()
     });
     let free_now = common::free_ram_gib();
     common::append_jsonl(
@@ -503,7 +532,9 @@ pub fn cmd_doctor(root: &str, args: &[String]) -> i32 {
         &format!(
             "{{\"ts\":{},\"free\":{},\"issues\":{},\"warnings\":{}}}",
             common::now_unix(),
-            free_now.map(|f| format!("{:.1}", f)).unwrap_or_else(|| "null".to_string()),
+            free_now
+                .map(|f| format!("{:.1}", f))
+                .unwrap_or_else(|| "null".to_string()),
             fails,
             warns
         ),
@@ -530,7 +561,10 @@ pub fn cmd_doctor(root: &str, args: &[String]) -> i32 {
         println!("{}", s);
     } else {
         println!("================================================================");
-        println!("  Loop Studio DOCTOR — SYSTEM INTEGRITY DIAGNOSTIC (v{})", VERSION);
+        println!(
+            "  Loop Studio DOCTOR — SYSTEM INTEGRITY DIAGNOSTIC (v{})",
+            VERSION
+        );
         println!("================================================================");
         for c in &checks {
             let mark = match c.level {
@@ -541,8 +575,17 @@ pub fn cmd_doctor(root: &str, args: &[String]) -> i32 {
             println!("  [{}] {:<16} {}", mark, c.name, c.detail);
         }
         if let (Some(pf), Some(cf)) = (prev_free, free_now) {
-            let arrow = if cf < pf { "↓" } else if cf > pf { "↑" } else { "→" };
-            println!("  [..] ram_trend      {:.1} -> {:.1} GiB free {} (since last doctor)", pf, cf, arrow);
+            let arrow = if cf < pf {
+                "↓"
+            } else if cf > pf {
+                "↑"
+            } else {
+                "→"
+            };
+            println!(
+                "  [..] ram_trend      {:.1} -> {:.1} GiB free {} (since last doctor)",
+                pf, cf, arrow
+            );
         }
         println!("================================================================");
         if fails == 0 {
@@ -565,14 +608,25 @@ pub fn cmd_thermal() {
     println!("  THERMAL & POWER GOVERNOR");
     println!("================================================================");
     let state = common::thermal_state();
-    println!("  Current Thermal Level : {}", common::thermal_label(&state));
+    println!(
+        "  Current Thermal Level : {}",
+        common::thermal_label(&state)
+    );
     println!("\n  Telemetry Detail:\n{}", common::thermal_detail().trim());
     println!("----------------------------------------------------------------");
     match state.as_deref() {
-        Some("Nominal") => println!("  Recommendation: Optimal headroom. Full Q8_0 and MTP enabled."),
-        Some("Fair") => println!("  Recommendation: Moderate heat. Monitor TTFT; keep vents clear."),
-        Some("Serious") => println!("  Recommendation: Throttling near. Swap Q8->Q4; defer long loops."),
-        Some("Critical") => println!("  Recommendation: Overheat risk! Throttle Q8->Q4 now or pause 5 min."),
+        Some("Nominal") => {
+            println!("  Recommendation: Optimal headroom. Full Q8_0 and MTP enabled.")
+        }
+        Some("Fair") => {
+            println!("  Recommendation: Moderate heat. Monitor TTFT; keep vents clear.")
+        }
+        Some("Serious") => {
+            println!("  Recommendation: Throttling near. Swap Q8->Q4; defer long loops.")
+        }
+        Some("Critical") => {
+            println!("  Recommendation: Overheat risk! Throttle Q8->Q4 now or pause 5 min.")
+        }
         None => println!(
             "  Recommendation: UNKNOWN — pmset did not answer, so no level below is a \
              measurement. Check the raw detail above before trusting a wide context."
@@ -595,7 +649,11 @@ pub fn cmd_cap(args: &[String]) {
         match cap.parse::<u64>() {
             Ok(n) => {
                 if common::persist_or_warn(&cap_path(), &n.to_string(), "context_cap") {
-                    println!("Persisted active context cap: {} tokens ({}).", n, cap_path());
+                    println!(
+                        "Persisted active context cap: {} tokens ({}).",
+                        n,
+                        cap_path()
+                    );
                 }
             }
             Err(_) => println!("Invalid cap '{}': expected integer tokens.", cap),
@@ -618,7 +676,10 @@ pub fn cmd_cap(args: &[String]) {
 pub fn cmd_visualize(root: &str) {
     if !common::port_up(common::gateway_port()) {
         let port = common::gateway_port();
-        println!("Auto-starting loop-studio-router on :{} in background...", port);
+        println!(
+            "Auto-starting loop-studio-router on :{} in background...",
+            port
+        );
         let router_bin = common::bin(root, "loop-studio-router");
         let _ = Command::new(&router_bin)
             .env("LOOP_STUDIO_ROUTER_PORT", port.to_string())
@@ -661,7 +722,10 @@ pub fn cmd_visualize(root: &str) {
         }
     }
     eprintln!("Loop Studio not built yet.");
-    eprintln!("Build & package: cd {}/SwiftUI && ./package-app.sh --open", root);
+    eprintln!(
+        "Build & package: cd {}/SwiftUI && ./package-app.sh --open",
+        root
+    );
     eprintln!("Or build debug:  cd {}/SwiftUI && swift run", root);
 }
 
@@ -685,13 +749,38 @@ pub fn cmd_dashboard(root: &str, args: &[String]) {
         let src = env::var("LOOP_STUDIO_APP")
             .ok()
             .filter(|p| fs::metadata(p).is_ok())
-            .or_else(|| env::var("LOOP_STUDIO_DASHBOARD").ok().filter(|p| fs::metadata(p).is_ok()))
-            .or_else(|| if fs::metadata(&built_loop_studio).is_ok() { Some(built_loop_studio) } else { None })
-            .or_else(|| if fs::metadata(&built_lac_studio).is_ok() { Some(built_lac_studio) } else { None })
-            .or_else(|| if fs::metadata(&built_loop_lac_studio).is_ok() { Some(built_loop_lac_studio) } else { None })
+            .or_else(|| {
+                env::var("LOOP_STUDIO_DASHBOARD")
+                    .ok()
+                    .filter(|p| fs::metadata(p).is_ok())
+            })
+            .or_else(|| {
+                if fs::metadata(&built_loop_studio).is_ok() {
+                    Some(built_loop_studio)
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                if fs::metadata(&built_lac_studio).is_ok() {
+                    Some(built_lac_studio)
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                if fs::metadata(&built_loop_lac_studio).is_ok() {
+                    Some(built_loop_lac_studio)
+                } else {
+                    None
+                }
+            })
             .unwrap_or(built_dash);
         if fs::metadata(&src).is_err() {
-            eprintln!("Loop Studio not built yet. Build first: cd {}/SwiftUI && swift build", root);
+            eprintln!(
+                "Loop Studio not built yet. Build first: cd {}/SwiftUI && swift build",
+                root
+            );
             std::process::exit(1);
         }
         let dir = format!("{}/.local/bin", common::home_dir());
@@ -735,9 +824,10 @@ pub fn cmd_dashboard(root: &str, args: &[String]) {
 
 pub fn cmd_stop() {
     println!("Stopping Loop Studio services...");
-    let pid_files = [
-        (format!("{}/.loop-studio/router.pid", common::home_dir()), "loop-studio-router"),
-    ];
+    let pid_files = [(
+        format!("{}/.loop-studio/router.pid", common::home_dir()),
+        "loop-studio-router",
+    )];
     for (pf, label) in pid_files {
         if let Ok(pid) = fs::read_to_string(&pf) {
             let pid = pid.trim().to_string();
@@ -760,7 +850,12 @@ pub fn cmd_stop() {
                     continue;
                 } else {
                     let ok = common::signal_pid(pid.parse::<u32>().unwrap_or(0), "TERM");
-                    println!("  {} pid {}: {}", label, pid, if ok { "signaled" } else { "signal failed" });
+                    println!(
+                        "  {} pid {}: {}",
+                        label,
+                        pid,
+                        if ok { "signaled" } else { "signal failed" }
+                    );
                 }
             }
             let _ = fs::remove_file(&pf);
@@ -801,7 +896,11 @@ pub fn cmd_ps() {
         "  {:<8} :{}  {}",
         "gateway",
         common::gateway_port(),
-        if common::port_up(common::gateway_port()) { "LISTENING" } else { "-" }
+        if common::port_up(common::gateway_port()) {
+            "LISTENING"
+        } else {
+            "-"
+        }
     );
     println!(
         "  {:<8} :{}  {}",
@@ -813,12 +912,19 @@ pub fn cmd_ps() {
             "-"
         }
     );
-    for (name, port) in [("llama", common::llama_port()), ("ollama", common::ollama_port())] {
+    for (name, port) in [
+        ("llama", common::llama_port()),
+        ("ollama", common::ollama_port()),
+    ] {
         println!(
             "  {:<8} :{}  {}",
             name,
             port,
-            if common::port_up(port) { "LISTENING" } else { "-" }
+            if common::port_up(port) {
+                "LISTENING"
+            } else {
+                "-"
+            }
         );
     }
 }
@@ -866,10 +972,7 @@ pub fn cmd_logs(args: &[String]) {
             let _ = total;
         }
         let (task_bytes, task_files) = common::task_logs_footprint();
-        println!(
-            "=== {} ===",
-            common::task_logs_dir()
-        );
+        println!("=== {} ===", common::task_logs_dir());
         println!(
             "    {:.1} MiB across {task_files} transcript(s) (newest {} kept, each capped at {} MiB)",
             task_bytes as f64 / (1024.0 * 1024.0),
@@ -881,10 +984,7 @@ pub fn cmd_logs(args: &[String]) {
             println!("(no task transcripts yet)");
             return;
         }
-        match common::tail_file(
-            &format!("{}/{}", common::task_logs_dir(), newest),
-            100,
-        ) {
+        match common::tail_file(&format!("{}/{}", common::task_logs_dir(), newest), 100) {
             Some(t) if !t.is_empty() => print!("{}", t),
             _ => println!("(transcript unreadable — {} may be mid-write)", newest),
         }
@@ -908,9 +1008,7 @@ pub fn cmd_logs(args: &[String]) {
             reclaimed as f64 / (1024.0 * 1024.0)
         );
         if failed > 0 {
-            eprintln!(
-                "  [x] {failed} generation(s) could not be removed and are still on disk"
-            );
+            eprintln!("  [x] {failed} generation(s) could not be removed and are still on disk");
             std::process::exit(1);
         }
     }
@@ -984,12 +1082,27 @@ pub fn cmd_config(root: &str) {
     println!("=== Loop Studio effective configuration ===");
     println!("  version      : {}", VERSION);
     println!("  root         : {}", root);
-    println!("  gateway      : {}", e("LOOP_STUDIO_GATEWAY_URL", &format!("http://127.0.0.1:{}/v1", common::gateway_port())));
+    println!(
+        "  gateway      : {}",
+        e(
+            "LOOP_STUDIO_GATEWAY_URL",
+            &format!("http://127.0.0.1:{}/v1", common::gateway_port())
+        )
+    );
     println!("  router_port  : {}", common::gateway_port());
-    println!("  bind_addr    : {}", e("LOOP_STUDIO_BIND_ADDR", &e("LOOP_STUDIO_ROUTER_HOST", "127.0.0.1")));
+    println!(
+        "  bind_addr    : {}",
+        e(
+            "LOOP_STUDIO_BIND_ADDR",
+            &e("LOOP_STUDIO_ROUTER_HOST", "127.0.0.1")
+        )
+    );
     println!(
         "  auth         : {}",
-        if env::var("LOOP_STUDIO_API_TOKEN").map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        if env::var("LOOP_STUDIO_API_TOKEN")
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+        {
             "Bearer required on every listener (token set, redacted)"
         } else {
             "none (loopback only)"
@@ -997,9 +1110,26 @@ pub fn cmd_config(root: &str) {
     );
     println!("  backend_pref : {}", e("LOOP_STUDIO_BACKEND", "auto"));
     println!("  primary      : {}", e("PRIMARY_MODEL", "qwen3.8-27b"));
-    println!("  mlx_model    : {}", e("MLX_MODEL", "mlx-community/Qwen3.8-27B-4bit"));
-    println!("  llama_model  : {}", e("LLAMA_MODEL", "unsloth/Qwen3.6-27B-MTP-GGUF:Q8_0"));
-    println!("  model_base   : {} (mounted={})", common::model_base(), common::volume_mounted("/Volumes/AIModels"));
-    println!("  branch       : {} (commits={})", common::default_branch_in(root), common::repo_has_commits_in(root));
-    println!("  task_timeout : {}s", super::worker::task_timeout().as_secs());
+    println!(
+        "  mlx_model    : {}",
+        e("MLX_MODEL", "mlx-community/Qwen3.8-27B-4bit")
+    );
+    println!(
+        "  llama_model  : {}",
+        e("LLAMA_MODEL", "unsloth/Qwen3.6-27B-MTP-GGUF:Q8_0")
+    );
+    println!(
+        "  model_base   : {} (mounted={})",
+        common::model_base(),
+        common::volume_mounted("/Volumes/AIModels")
+    );
+    println!(
+        "  branch       : {} (commits={})",
+        common::default_branch_in(root),
+        common::repo_has_commits_in(root)
+    );
+    println!(
+        "  task_timeout : {}s",
+        super::worker::task_timeout().as_secs()
+    );
 }
