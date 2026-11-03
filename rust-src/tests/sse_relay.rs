@@ -1100,7 +1100,7 @@ fn relay_framing_regressions() {
     // full and counted as a success. The body arriving is not the point —
     // a clean FIN never reaches the stream-error arms — so assert the log
     // gained exactly one proxied line and no stream-* line.
-    let usage_path = format!("{}/.lac/router-usage.jsonl", tmp_home.display());
+    let usage_path = format!("{}/.loop-studio/router-usage.jsonl", tmp_home.display());
     let proxied_before = count_outcome(&usage_path, "proxied");
     let faults_before = count_faults(&usage_path);
     let (eof_json, _, _) = probe(router_port, "eof-json");
@@ -1202,7 +1202,7 @@ fn relay_framing_regressions() {
         "the reset backend must be ejected, with traffic failing over: {after_resets_text}"
     );
 
-    let usage = std::fs::read_to_string(format!("{}/.lac/router-usage.jsonl", tmp_home.display()))
+    let usage = std::fs::read_to_string(format!("{}/.loop-studio/router-usage.jsonl", tmp_home.display()))
         .expect("usage log exists");
     assert_eq!(usage.matches("\"outcome\":\"stream-broke\"").count(), 2);
     assert_eq!(usage.matches("\"outcome\":\"unsupported-upgrade\"").count(), 1);
@@ -1329,7 +1329,7 @@ fn relay_framing_regressions() {
         String::from_utf8_lossy(&after_cuts)
     );
 
-    let budget_usage = std::fs::read_to_string(format!("{}/.lac/router-usage.jsonl", budget_home.display()))
+    let budget_usage = std::fs::read_to_string(format!("{}/.loop-studio/router-usage.jsonl", budget_home.display()))
         .expect("budget usage log exists");
     assert_eq!(budget_usage.matches("\"outcome\":\"stream-broke\"").count(), 3);
     assert_eq!(budget_usage.matches("\"outcome\":\"stream-cut\"").count(), 0);
@@ -1571,7 +1571,7 @@ fn relay_framing_regressions() {
         answer.contains("healthy-failover"),
         "the request must have been answered by the second backend: {answer}"
     );
-    let charge_log = format!("{}/.lac/router-usage.jsonl", charge_home.display());
+    let charge_log = format!("{}/.loop-studio/router-usage.jsonl", charge_home.display());
     let lines = wait_usage_lines(&charge_log, 2);
     assert_eq!(lines.len(), 2, "one line per attempt, no more: {lines:?}");
     assert_eq!(

@@ -340,7 +340,7 @@ fn wait_router(port: u16) {
 fn router_intelligence() {
     let _port_lock = support::PortLock::acquire();
     // Isolate HOME: the router persists its backend choice and usage log
-    // under ~/.lac — the test must never rewrite the operator's files.
+    // under ~/.loop-studio — the test must never rewrite the operator's files.
     // (All scenarios run sequentially in this one test; env is global.)
     let tmp_home = std::env::temp_dir().join(format!("loop-studio-test-home-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&tmp_home);
@@ -429,7 +429,7 @@ fn router_intelligence() {
     let (code, _) = get(router_port, "/lac/switch?target=auto");
     assert_eq!(code, 200, "legacy switch alias must still answer");
 
-    let usage = std::fs::read_to_string(tmp_home.join(".lac/router-usage.jsonl"))
+    let usage = std::fs::read_to_string(tmp_home.join(".loop-studio/router-usage.jsonl"))
         .expect("usage log exists");
     assert!(usage.contains("\"outcome\":\"proxied\""), "{}", &usage[usage.len().saturating_sub(400)..]);
 
@@ -486,10 +486,10 @@ fn router_intelligence() {
 
     // A switch that could not be written. The reply used to say
     // `"persisted": true` with the write's error discarded, so a read-only or
-    // full `~/.lac` lost the operator's choice silently while the dashboard
+    // full `~/.loop-studio` lost the operator's choice silently while the dashboard
     // showed it as saved. A directory where the file belongs makes the rename
     // fail for any user, root included.
-    std::fs::create_dir_all(honest_home.join(".lac/router-backend")).expect("block the write");
+    std::fs::create_dir_all(honest_home.join(".loop-studio/router-backend")).expect("block the write");
     let (code, switched) = get(honest_port, "/loop-studio/switch?target=llama");
     assert_eq!(code, 200);
     assert!(

@@ -225,7 +225,7 @@ fn serve_mlx_termination_takes_the_engine_with_it() {
 
     // And the port file must not outlive it either, or the router is told
     // about a lane that nothing is serving.
-    let port_file = harness.dir.join("home/.lac/mlx.port");
+    let port_file = harness.dir.join("home/.loop-studio/mlx.port");
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline && port_file.exists() {
         sleep_ms(50);
@@ -234,7 +234,7 @@ fn serve_mlx_termination_takes_the_engine_with_it() {
         let contents = std::fs::read_to_string(&port_file).ok();
         force_kill(engine);
         panic!(
-            "~/.lac/mlx.port still advertises a lane that is gone: {contents:?}\n--- wrapper output ---\n{}",
+            "~/.loop-studio/mlx.port still advertises a lane that is gone: {contents:?}\n--- wrapper output ---\n{}",
             harness.log()
         );
     }
