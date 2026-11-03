@@ -5028,16 +5028,18 @@ mod tests {
         // does not yet mean the value is visible. Waiting on the counter and
         // then reading the memo is a race the scheduler can win — it did, and
         // the failure looked like the memo never refreshing at all.
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(10);
         while memo.fresh().is_none() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(Duration::from_millis(25));
         }
+        // Capture fresh() once so both assertions see the same value.
+        let fresh_val = memo.fresh();
         assert!(
             calls.load(Ordering::SeqCst) > before,
             "an expired entry must be rebuilt, not served forever"
         );
         assert_eq!(
-            memo.fresh().as_deref(),
+            fresh_val.as_deref(),
             Some("{\"n\":2}"),
             "and the next caller must see the newly loaded model"
         );

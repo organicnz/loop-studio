@@ -6,11 +6,11 @@
     <string>org.loopstudio.worker</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/organic/.local/bin/loop-studio</string>
+        <string>/Users/$USER/.local/bin/loop-studio</string>
         <string>worker</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/organic/dev/work/AI/loop-studio</string>
+    <string>/Users/$USER/dev/work/AI/loop-studio</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -27,13 +27,13 @@
     <key>ExitTimeOut</key>
     <integer>30</integer>
     <key>StandardOutPath</key>
-    <string>/Users/organic/Library/Logs/loop-studio-worker.log</string>
+    <string>/Users/$USER/Library/Logs/loop-studio-worker.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/organic/Library/Logs/loop-studio-worker.err</string>
+    <string>/Users/$USER/Library/Logs/loop-studio-worker.err</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/Users/organic/.cargo/bin:/Users/organic/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>/opt/homebrew/bin:/Users/$USER/.cargo/bin:/Users/$USER/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
 </dict>
 </plist>

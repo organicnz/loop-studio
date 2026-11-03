@@ -6,11 +6,11 @@
     <string>org.loopstudio.router</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/organic/dev/work/AI/loop-studio/rust-src/target/release/loop-studio-router</string>
+        <string>/Users/$USER/dev/work/AI/loop-studio/rust-src/target/release/loop-studio-router</string>
         <string>8000</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/organic/dev/work/AI/loop-studio</string>
+    <string>/Users/$USER/dev/work/AI/loop-studio</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -27,9 +27,9 @@
     <key>ExitTimeOut</key>
     <integer>30</integer>
     <key>StandardOutPath</key>
-    <string>/Users/organic/Library/Logs/loop-studio-router.log</string>
+    <string>/Users/$USER/Library/Logs/loop-studio-router.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/organic/Library/Logs/loop-studio-router.err</string>
+    <string>/Users/$USER/Library/Logs/loop-studio-router.err</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>LOOP_STUDIO_ROUTER_PORT</key>
@@ -43,7 +43,7 @@
         <key>LOOP_STUDIO_BIND_ADDR</key>
         <string>127.0.0.1</string>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/Users/organic/.cargo/bin:/Users/organic/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>/opt/homebrew/bin:/Users/$USER/.cargo/bin:/Users/$USER/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
 </dict>
 </plist>
