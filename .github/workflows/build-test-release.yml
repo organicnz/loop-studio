@@ -73,11 +73,13 @@ jobs:
             rust-src/target/release/kv-manage
           retention-days: 30
 
-  # Optional: publish to release
+  # Publish release binaries — runs on macos-15 so it shares the runner
+  # arch with the build job (Apple Silicon ARM64 binaries cannot be
+  # inspected on ubuntu-24.04).
   release:
     needs: test
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: macos-15
     permissions:
       contents: write
     steps:
@@ -87,6 +89,12 @@ jobs:
           name: loop-studio-release-${{ github.sha }}
           path: ./artifacts
 
+      - name: Verify binaries are executable ARM64
+        run: |
+          for bin in ./artifacts/loop-studio ./artifacts/loop-studio-router ./artifacts/serve-mlx; do
+            test -x "$bin" && file "$bin" | grep -q "arm64" && echo "✓ $bin" || (echo "✗ $bin not arm64 executable" && exit 1)
+          done
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -95,32 +103,38 @@ jobs:
           fail_on_unmatched_files: true
           name: Loop Studio v2.9 Release
           body: |
-            ## What's Changed
+            ## Loop Studio v2.9 — Full Rust Stack + Mac Studio Ready
 
-            - Full router learning layer (EWMA, 3-strike/30s breaker, fastest reorder)
-            - Token-provenance-aware KV manage (explicit → env → router 1h estimate → legacy)
-            - Rust-first stack: all scripts std-only, plain `rustc -O`, zero shell-outs
-            - Transcript logging with `run_logged` + `task_log_path`
-            - Doctor history JSONL + RAM-trend line
-            - KV provenance `risk_level_full` with unit tests
-            - Hermetic process-level gateway/CLI E2E smoke
-            - Rust and Swift delivery gates enforced by `make validate`
-            - Clean release build, zero errors
+            ### What's new in v2.9
+            - **Modular Rust codebase**: `common.rs` → 10 sub-modules, `loop_studio.rs` → 9 modules
+            - **Router hardening**: typed `Backend` enum, `handle_connection` decomposed
+            - **State dir renamed**: `~/.lac` → `~/.loop-studio` (all 22 files updated)
+            - **Hermes best practices**: context limit injection, phase checkpoints, `--parallel N`, thermal Q8→Q4 auto-throttle, auto-save every 5min, context pressure check, thermal CSV logging, minor findings JSONL
+            - **daemon install now includes serve-mlx** with HF_HOME retargeting
+            - **bootstrap runs `mise install`** automatically on fresh machines
+            - **pull-models preflights ollama** daemon before attempting pull
+            - **plist `$USER` literal fixed** — launchd never expands shell vars
+            - **Swift GatewayClient refactor**: clean seam (request in, typed events out)
+            - **642 tests pass**, zero flaky tests, CI stable
 
-            ### Binaries
-            - `loop-studio` — CLI orchestrator
-            - `loop-studio-router` — router learning layer
-            - `loop-studio-tui` — TUI interface
-            - `bootstrap` — mount-gated bootstrap
-            - `serve-mlx` — MLX launcher (port-drift, thermal-aware)
-            - `serve-llama` — llama-server launcher (thermal context clamp)
-            - `pull-models` — qwen3.8-27b fetcher only
-            - `kv-manage` — token provenance + risk levels
+            ### Day-One (Mac Studio)
+            ```bash
+            brew bundle install && mise install
+            make build && make install
+            loop-studio bootstrap
+            brew services start ollama && loop-studio pull-models
+            make daemon-install
+            loop-studio doctor
+            ```
 
-            ### Notes
-            - Built on GitHub-hosted `macos-15` (ARM64), same pattern as foodshare (`ubuntu-24.04` / `macos-15`)
-            - KV provenance chain: explicit → env → router 1h estimate → legacy probe
-            - Circuit breaker: 3-strike/30s EWMA backend failure handler
-            - Fastest-mode routing: reorder backends by measured latency
+            ### Binaries (Apple Silicon ARM64, macOS 13+)
+            - `loop-studio` — unified CLI (status, serve, route, worker, hermes, doctor, bench, kv, loop)
+            - `loop-studio-router` — intelligent reverse proxy on :8000 (EWMA, circuit breaker, auth)
+            - `loop-studio-tui` — full terminal control centre
+            - `bootstrap` — idempotent machine setup
+            - `serve-mlx` — MLX inference launcher with port-drift detection
+            - `serve-llama` — llama-server launcher (Q8_0, Flash Attention)
+            - `pull-models` — Qwen3.8-27B model puller with ollama preflight
+            - `kv-manage` — KV cache risk analyser and truncation engine
             - KV risk levels: GREEN/YELLOW/RED with escalation invariants
           draft: false

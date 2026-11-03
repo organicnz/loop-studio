@@ -34,6 +34,29 @@ pub fn which(cmd: &str) -> Option<String> {
             return Some(cand);
         }
     }
+    // Fallback: probe well-known install locations that launchd/GUI apps
+    // may not have in their inherited PATH (homebrew, mise, local bin).
+    for dir in [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+    ] {
+        let cand = format!("{}/{}", dir, cmd);
+        if is_executable(Path::new(&cand)) {
+            return Some(cand);
+        }
+    }
+    // mise shims dir (~/.local/share/mise/shims)
+    if let Ok(home) = env::var("HOME") {
+        let cand = format!("{}/.local/share/mise/shims/{}", home, cmd);
+        if is_executable(Path::new(&cand)) {
+            return Some(cand);
+        }
+        let cand2 = format!("{}/.local/bin/{}", home, cmd);
+        if is_executable(Path::new(&cand2)) {
+            return Some(cand2);
+        }
+    }
     None
 }
 
