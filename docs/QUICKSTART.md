@@ -10,19 +10,34 @@ The primary model throughout this build is **`qwen3.8-27b`** — the Qwen3.8-27B
 VLM released Aug 14 2026 (27.78B params, 64 layers, 262K native / 1M YaRN, MTP head).
 It is the better model per your preference, replacing the older `qwen3-coder`.
 
-## 1. Initial arrival / day-one setup
+## 1. Initial arrival / day-one setup (Mac Studio)
 
 ```bash
 # Clone & enter
 git clone <repo-url> ~/dev/work/AI/loop-studio
 cd ~/dev/work/AI/loop-studio
 
+# Install system dependencies (one-time)
+brew bundle install          # ollama, llama.cpp, mlx-lm, uv, mise, lefthook, ghostty
+mise install                 # Rust 1.98.0 + uv (Python managed by brew, not mise)
+
+# Build all Rust binaries (~4s on Apple Silicon)
+make build                   # cargo build --release → rust-src/target/release/
+
+# Install to PATH
+make install                 # copies all 8 binaries to ~/.local/bin
+
+# Verify stack (no inference server needed for this)
+loop-studio doctor           # full diagnostics
+loop-studio status           # real-time telemetry
+
 # Option A — Unified CLI (fastest & recommended)
 ./rust-src/target/release/loop-studio doctor     # Verify stack integrity
 ./rust-src/target/release/loop-studio status     # Real-time telemetry
 
 # Option B — Loop Studio (Native Apple Silicon macOS Liquid Glass Desktop App)
-./SwiftUI/package-app.sh --open          # Or run: loop-studio visualize
+make app                     # build + package Loop Studio.app
+open "SwiftUI/.build/Loop Studio.app"
 # Features Claude/Codex ergonomics, Code Assistant split canvas (⌘2), live Hugging Face Model Hub, and Ops telemetry
 
 # Option C — Code Assistant from CLI (Instant single-shot or piped refactoring)
@@ -38,7 +53,7 @@ cat src/lib.rs | loop-studio code "Generate comprehensive unit tests"
 # This does (Rust-first, idempotent):
 #   • Ensures Homebrew + brew bundle
 #   • Installs Rust via rustup (stable) — NOT brew rust
-#   • Installs uv, python 3.14, node 24 via mise
+#   • Installs uv, python 3.14 via mise
 #   • Creates /Volumes/AIModels layout (APFS encrypted, GUID)
 #   • Symlinks ~/.ollama/models -> /Volumes/AIModels/ollama
 #   • Auto-installs Kanban loop templates into ~/todo/loop-studio-loops/
@@ -152,16 +167,13 @@ opencode2 run 'Use the auditor skill'
 
 ## 5b. Loop Studio Native macOS Desktop App
 
-Launch the native Apple Silicon desktop client with Apple Liquid Glass aesthetics, Claude Desktop & Codex ergonomics, split Code Assistant (`⌘2`), and Hugging Face Model Hub discovery:
+Launch the native Apple Silicon desktop client:
 
 ```bash
-# Launch Loop Studio (builds and packages on first run)
+make app                     # build + package → SwiftUI/.build/Loop Studio.app
+open "SwiftUI/.build/Loop Studio.app"
+# Or via CLI:
 loop-studio studio
-# or
-make studio
-
-# Package as signed macOS application (.build/Loop Studio.app)
-cd SwiftUI && ./package-app.sh --open
 ```
 
 **Key Features:**
